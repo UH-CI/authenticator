@@ -1,7 +1,19 @@
 # Change Log
 All notable changes to this project will be documented in this file.
 
-## 1.6.2 - 2024-06-18 (estimate)
+
+## 1.6.3 - 2024-08-07
+### Breaking Changes:
+- None
+
+### New features:
+- This release makes some minor updates to the TACC MFA login page.  
+
+### Bug Fixes:
+- None
+
+
+## 1.6.2 - 2024-06-18
 ### Breaking Changes:
 - None
 
