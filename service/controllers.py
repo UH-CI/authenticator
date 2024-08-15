@@ -26,7 +26,7 @@ from service.errors import InvalidPasswordError
 from service.models import db, TenantConfig, AccessTokens, RefreshTokens, Client, TokenRequestBody, Token, AuthorizationCode, DeviceCode, token_webapp_clients, tenant_configs_cache
 from service.ldap import list_tenant_users, get_tenant_user, check_username_password
 from service.oauth2ext import OAuth2ProviderExtension
-from service.mfa import needs_mfa, call_mfa, check_mfa_expired
+from service.mfa import needs_mfa, call_mfa, check_mfa_expired, check_sms, send_sms
 
 
 # get the logger instance -
@@ -596,6 +596,11 @@ class LoginResource(Resource):
             redirect_url = 'mfaresource'
             session['mfa_validated'] = False
             session['mfa_required'] = True
+            sms_required = check_sms(tenant_id, username)
+            logger.debug(f"SMS required for: {username}")
+            if sms_required:
+                sent = send_sms(tenant_id, username)
+                logger.debug(f"Was SMS sent? {sent}")
         if session.get('device_login'):
             response_type = 'device_code'
             if not mfa_required:
@@ -606,6 +611,7 @@ class LoginResource(Resource):
                                 state=client_state,
                                 client_display_name=client_display_name,
                                 response_type=response_type))
+
 
 class MFAResource(Resource):
     def get(self):
@@ -788,8 +794,8 @@ class DeviceFlowResource(Resource):
             context = {'error': response,
                    'username': session.get('username')}
             return make_response(render_template('device-code.html', **context), 200, headers)
-        
-        
+
+
 class DeviceCodeResource(Resource):
     """
     POST request for creating a device code
@@ -822,7 +828,7 @@ class DeviceCodeResource(Resource):
         device_code_base_url = request.base_url.split("/v3/oauth2")[0]
         if not 'localhost' in device_code_base_url:
             device_code_base_url = device_code_base_url.replace('http://', 'https://')
-        
+
         device_code = DeviceCode(tenant_id=tenant_id,
                                  username=None,
                                  client_id=client_id,
@@ -862,7 +868,7 @@ class AuthorizeResource(Resource):
         is_device_flow = True if 'device_login' in session else False
         # if we are using the multi_idp custom oa2 extension type it is possible we are being redirected here, not by the 
         # original web client, but by our select_idp page, in which case we need to get the client out of the session.
-        
+
         # Update: 10/23/2023 JFS: the idp_id could be in the session but the client_id could not be. This would happen
         # if the following steps were taken:
         #    1) user logs in with client 1. the idp_id gets set in the session here.
