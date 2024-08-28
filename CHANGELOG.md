@@ -2,12 +2,13 @@
 All notable changes to this project will be documented in this file.
 
 
-## 1.6.3 - 2024-08-07
+## 1.6.3 - 2024-08-28
 ### Breaking Changes:
 - None
 
 ### New features:
 - This release makes some minor updates to the TACC MFA login page.  
+- Add SMS support to MFA authentication workflow (need to update tenant config with JWT for PIdea).
 
 ### Bug Fixes:
 - None
