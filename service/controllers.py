@@ -597,10 +597,10 @@ class LoginResource(Resource):
             session['mfa_validated'] = False
             session['mfa_required'] = True
             sms_required = check_sms(tenant_id, username)
-            logger.debug(f"SMS required for: {username}")
             if sms_required:
+                logger.debug(f"SMS required for: {username}")
                 sent = send_sms(tenant_id, username)
-                logger.debug(f"Was SMS sent? {sent}")
+                logger.debug(f"SMS Sent: {sent}")
         if session.get('device_login'):
             response_type = 'device_code'
             if not mfa_required:

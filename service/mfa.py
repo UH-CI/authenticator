@@ -111,7 +111,7 @@ def get_config_data(config):
     data['privacy_idea_url'] = config['tacc']['privacy_idea_url']
     data['privacy_idea_client_id'] = config['tacc']['privacy_idea_client_id']
     data['privacy_idea_client_key'] = config['tacc']['privacy_idea_client_key']
-    data['privacy_idea_jwt'] = config['tacc']['privacy_idea_jwt']
+    data['privacy_idea_jwt'] = config['tacc'].get('privacy_idea_jwt', None)
     data['grant_types'] = config['tacc'].get('grant_types', '')
     data['realm'] = config['tacc'].get('realm', 'tacc')
 
