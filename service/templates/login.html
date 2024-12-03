@@ -47,9 +47,15 @@
     </footer>
     <nav>
       <p>Having trouble?</p>
+      {% if tenant_id == 'apcd' %}
       <a href="https://tacc.utexas.edu/about/help/" rel="noreferrer" target="_blank">
         Account Help
       </a>
+      {% else %}
+      <a href="mailto:support@tickets.txapcd.org" rel="nonreferrer" target="_blank" >
+        For help, email support@tickets.txapcd.org
+      </a>
+      {% endif %}
     </nav>
   </form>
   <footer>
