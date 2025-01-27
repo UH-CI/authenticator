@@ -1310,8 +1310,9 @@ class TokensResource(Resource):
         # client id and client key are optional on the password grant type to allow new users to generate tokens
         # right away before they create a client
         if not auth:
-            client_id = None
-            client_key = None
+            # kprice 1/27/2025 optionally can include client credentials in post body
+            client_id = data.get('client_id')
+            client_key = data.get('client_key')
         else:
             try:
                 client_id = auth.username
