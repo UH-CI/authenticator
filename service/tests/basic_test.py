@@ -40,6 +40,7 @@ def init_db():
                 'active': True
                 }
         models.delete_tenant_from_db(TEST_TENANT_ID)
+        print(f'got tapisconf:: {tapisconf}')
         config = {
             "tenant_id":TEST_TENANT_ID,
             "allowable_grant_types":json.dumps(["password", "implicit", "authorization_code", "refresh_token", "device_code"]),
@@ -64,7 +65,7 @@ def init_db():
             # 2 years
             "max_refresh_token_ttl":63072000,
             "custom_idp_configuration":json.dumps({}),
-            "token_url": tapisconf['token_url'],
+            "token_url": 'http://localhost:5000/v3/tokens',
             "impers_oauth_client_id": "",
             "impers_oauth_client_secret": "",
             "impersadmin_username": "",
@@ -108,6 +109,7 @@ def validate_access_token(response):
     Validate the a response has an access token and it is properly formatted.
     """
     assert 'access_token' in response.json['result']['access_token']
+    assert 'id_token' in response.json['result']['access_token']
     assert 'expires_at' in response.json['result']['access_token']
     assert 'expires_in' in response.json['result']['access_token']
     assert 'jti' in response.json['result']['access_token']
@@ -489,6 +491,22 @@ def test_password_grant_valid(client, init_db):
         assert claims['tapis/access_token']['tapis/grant_type'] == 'password'
         check_refresh_token_table(claims, "password", False, TEST_CLIENT_ID)
 
+def test_password_grant_clientkey_in_post_data(client, init_db):
+    payload = {
+        'grant_type': 'password',
+        'client_id': TEST_CLIENT_ID,
+        'client_key': TEST_CLIENT_KEY,
+        'username': TEST_USERNAME,
+        'password': TEST_PASSWORD
+    }
+    response = client.post(
+        "http://localhost:5000/v3/oauth2/tokens",
+        data=json.dumps(payload),
+        content_type='application/json'
+    )
+    print(f'DEBUG: got response: {response.json}')
+    assert response.status_code == 200
+
 def test_password_grant_no_client(client, init_db):
     payload = {
         'grant_type': 'password',
@@ -565,9 +583,6 @@ def test_revoke_token(client, init_db):
 # get_userinfo
 # list_profiles
 # get_profile
-
-
-
 
 ## grant type tests
 
@@ -821,3 +836,5 @@ def test_exchange_device_code(client):
 ## MFA tests
 
 ## OAuth2ProviderExtCallback tests
+
+
