@@ -4,9 +4,10 @@ import pytest
 import json
 
 from tapisservice.auth import validate_token
+from tapisservice.config import conf as tapisconf
+from service.models import tenant_configs_cache, DeviceCode
 from service.api import app
-from service import models
-
+from service import models, mfa
 
 
 # These tests are intended to be run locally.
@@ -39,6 +40,7 @@ def init_db():
                 'active': True
                 }
         models.delete_tenant_from_db(TEST_TENANT_ID)
+        print(f'got tapisconf:: {tapisconf}')
         config = {
             "tenant_id":TEST_TENANT_ID,
             "allowable_grant_types":json.dumps(["password", "implicit", "authorization_code", "refresh_token", "device_code"]),
@@ -63,7 +65,7 @@ def init_db():
             # 2 years
             "max_refresh_token_ttl":63072000,
             "custom_idp_configuration":json.dumps({}),
-            "token_url": "",
+            "token_url": 'http://localhost:5000/v3/oauth2/tokens',
             "impers_oauth_client_id": "",
             "impers_oauth_client_secret": "",
             "impersadmin_username": "",
@@ -102,12 +104,12 @@ def get_basic_auth_header(username, password):
     user_pass = bytes(f"{username}:{password}", 'utf-8')
     return 'Basic {}'.format(b64encode(user_pass).decode())
 
-
 def validate_access_token(response):
     """
     Validate the a response has an access token and it is properly formatted.
     """
     assert 'access_token' in response.json['result']['access_token']
+    assert 'id_token' in response.json['result']['access_token']
     assert 'expires_at' in response.json['result']['access_token']
     assert 'expires_in' in response.json['result']['access_token']
     assert 'jti' in response.json['result']['access_token']
@@ -117,7 +119,6 @@ def validate_access_token(response):
     assert claims['sub'] == f'{TEST_USERNAME}@{TEST_TENANT_ID}'
     return claims
     
-
 def check_access_token_table(claims, grant_type, token_revoked, client_id=None):
     """
     Check that a token with `claims` generated using `grant_type` with `token_revoked` status 
@@ -140,7 +141,6 @@ def check_access_token_table(claims, grant_type, token_revoked, client_id=None):
     if client_id:
         assert token.client_id == client_id
     
-
 def check_refresh_token_table(claims, grant_type, token_revoked, client_id=None):
     """
     Check that a token with `claims` generated using `grant_type` with `token_revoked` status 
@@ -162,7 +162,47 @@ def check_refresh_token_table(claims, grant_type, token_revoked, client_id=None)
     assert token.grant_type == grant_type
     if client_id:
         assert token.client_id == client_id
-            
+
+def check_clients_table(client_id, callback_url=None, display_name=None, description=None, negative=False):
+    """
+    Check that a client created with the 'create client' endpoint exists with correct info
+    If negative=true, check that this client doesn't exist instead
+    """
+    print(f'checking clients table')
+    retrieved = models.Client.query.filter_by(client_id=client_id).first()
+    print(f'DEBUG got client:: {retrieved}')
+    try:
+        if not client:
+            raise AssertionError()
+        # validate info for client
+        if callback_url:
+            assert retrieved.callback_url == callback_url
+        if display_name:
+            assert retrieved.display_name == display_name
+        if description:
+            assert retrieved.description == description
+    except AssertionError as e:
+        if not negative:
+            raise AssertionError
+        pass
+
+def check_device_code_table(client_id, user_code, device_code, verification_url, status, negative=False):
+    """
+    Check that a device code created with the device code endpoint exists with correct info
+    """
+    print('Checking device_codes table')
+    retrieved = models.DeviceCode.query.filter_by(user_code=user_code).first()
+    print(f'DEBUG: got device code object:: {retrieved}')
+    if negative:
+        assert retrieved == None
+        return
+    assert retrieved.code == device_code
+    assert retrieved.user_code == user_code
+    assert retrieved.tenant_id == TEST_TENANT_ID
+    assert retrieved.client_id == client_id
+    assert retrieved.client_key ==  TEST_CLIENT_KEY
+    assert retrieved.status == status
+    assert retrieved.verification_uri == verification_url
 
 def validate_refresh_token(response):
     """
@@ -181,18 +221,147 @@ def validate_refresh_token(response):
     assert claims['tapis/access_token']['sub'] == f'{TEST_USERNAME}@{TEST_TENANT_ID}'
     return claims
 
+def get_jwt(client):
+    # TODO: add assertions for failing to get a token -- this should fail the current test somehow
+    # auth_header = {'Authorization': get_basic_auth_header(TEST_CLIENT_ID, TEST_CLIENT_KEY)}
+    payload = {
+        'grant_type': 'password',
+        'username': TEST_USERNAME,
+        'password': TEST_PASSWORD
+    }
+    response = client.post(
+        "http://localhost:5000/v3/oauth2/tokens",
+        # headers=auth_header,
+        data=json.dumps(payload),
+        content_type='application/json'
+    )
+    assert response.status_code == 200
+    assert 'access_token' in response.json['result']
+    # access_token:
+    access_token_str = response.json['result']['access_token']['access_token']
+    return access_token_str
+
+def gen_mfa_token(username, tokencode=None):
+    """
+    Generate a OTP mfa code using pyotp given a username and token code.
+    If a token code is not provided, a random one will be used.
+    """
+    pass
 
 # =====================
 # Actual test functions
 # =====================
+
+## utility tests
+# get jwt
+def test_get_jwt(client):
+    # note: This serves as a smoke test to verify the validity of the other results. 
+    # If this is failing, it will likely cause other authenticated endpoint tests to fail, but they won't always give the correct reason
+    # the assertions made in the get_jwt func are enough to verify success. No addtl checks needed here
+    print(f'Starting test of getting JWT')
+    result = get_jwt(client)
+    print(f'got result = {result}')
+
+# get mfa config
+def test_get_mfa_config(client):
+    print('top of get mfa config')
+    try:
+        print(f'what the heck is going on here')
+        tenant_config = tenant_configs_cache.get_config(TEST_TENANT_ID)
+        print(f'after tenant config get:: {tenant_config}')
+        mfa_config = json.loads(tenant_config.mfa_config)
+        if not mfa_config:
+            print(f'No mfa config found in tenant_config. Creating... ')
+            mfa_config = json.dumps({
+                "tacc": {
+                    "privacy_idea_url": "https://pidea01.tacc.utexas.edu",
+                    "privacy_idea_client_id": "p_client",
+                    "privacy_idea_client_key": "p_key",
+                    "grant_types": [
+                        "authorization_code",
+                        "implicit"
+                    ]
+                }
+            })
+            tenant_config.mfa_config = mfa_config
+        print(f'Got mfa config:: {mfa_config}')
+    except Exception as e:
+        print(f'got {e} while trying to get mfa config for tenant {TEST_TENANT_ID}')
+        raise Exception()
+
+## Health Check
+# hello
+def test_authenticator_hello(client):
+    # result = client.authenticator.hello()
+    result = client.get('http://localhost:5000/v3/oauth2/hello')
+    assert result.status_code == 200
+# ready
+def test_authenticator_ready(client):
+    # result = client.authenticator.ready()
+    result = client.get('http://localhost:5000/v3/oauth2/ready')
+    assert result.status_code == 200
+
+## Metadata
+# get_server_metadata
+def test_get_metadata(client):
+    result = client.get("http://localhost:5000/v3/oauth2/.well-known/oauth-authorization-server")
+    assert result.status_code == 200
+
+## Admin
+# get_config
+# update_config
+     
+## Clients
 
 def test_invalid_post(client):
     with client:
         response = client.post("http://localhost:5000/v3/oauth2/clients")
         assert response.status_code == 400
 
+# list_clients
+def test_authenticator_list_clients(client, capsys):
+    # result = client.authenticator.list_clients()
+    with client:
+        header = {'X-Tapis-Token': get_jwt(client)}
+        result = client.get('http://localhost:5000/v3/oauth2/clients', headers=header)
+        assert result.status_code == 200
 
-# grant type tests
+# create_client
+def test_authenticator_create_clients(client, capsys): ## TODO: this works, but doing it twice violates uniqueness constraint. Need to find a way to reliably erase it without using another endpoint
+    # result = client.authenticator.create_client(client_id=TEST_CLIENT_ID, callback_url='https://foo.example.com/oauth2/callback')
+    header = {'X-Tapis-Token': get_jwt(client)}
+    payload = {
+        "client_id": TEST_CLIENT_ID,
+        "client_key": TEST_CLIENT_KEY,
+        "callback_url": TEST_CLIENT_REDIRECT_URI,
+        "display_name": "A Test Client",
+        "description": "This is a client just for testing"
+    }
+    result = client.post(
+        'http://localhost:5000/v3/oauth2/clients', 
+        headers=header,
+        data=json.dumps(payload),
+        content_type='application/json'
+    )
+    
+    assert result.status_code == 200
+    # check the clients table to make sure it was created in the DB
+    check_clients_table(TEST_CLIENT_ID, TEST_CLIENT_REDIRECT_URI, 'A Test Client', "This is a client just for testing")
+    
+# Get client details
+
+# Update client details
+
+# Permanantly set a client to inactive
+def test_authenticator_delete_clients(client):
+    header = {'X-Tapis-Token': get_jwt(client)}
+    result = client.delete(f'http://localhost:5000/v3/oauth2/clients/{TEST_CLIENT_ID}', headers=header)
+    print(f'DEBUG: got result of delete call: {result.json}')
+    assert result.status_code == 200
+    check_clients_table(TEST_CLIENT_ID, negative=True)
+
+## Tokens
+# Generate a Tapis JWT
 def test_password_grant_invalid_client(client, init_db):
     with client:
         # pass a client that does not exist
@@ -322,6 +491,22 @@ def test_password_grant_valid(client, init_db):
         assert claims['tapis/access_token']['tapis/grant_type'] == 'password'
         check_refresh_token_table(claims, "password", False, TEST_CLIENT_ID)
 
+def test_password_grant_clientkey_in_post_data(client, init_db):
+    payload = {
+        'grant_type': 'password',
+        'client_id': TEST_CLIENT_ID,
+        'client_key': TEST_CLIENT_KEY,
+        'username': TEST_USERNAME,
+        'password': TEST_PASSWORD
+    }
+    response = client.post(
+        "http://localhost:5000/v3/oauth2/tokens",
+        data=json.dumps(payload),
+        content_type='application/json'
+    )
+    print(f'DEBUG: got response: {response.json}')
+    assert response.status_code == 200
+
 def test_password_grant_no_client(client, init_db):
     payload = {
         'grant_type': 'password',
@@ -341,6 +526,65 @@ def test_password_grant_no_client(client, init_db):
     assert claims['tapis/grant_type'] == 'password'
     # when not using an oauth client, refresh tokens are not returned:
     assert 'refresh_token' not in response.json['result']
+
+# Create a v2 bearer token from a Tapis v3 JWT
+# Revoke a token 
+def test_revoke_token(client, init_db):
+    """
+    Test the revocation endpoint, and check the status of the tokens are updated on the table
+    after revoking. 
+    """
+    # first, generate an access and refresh token pair
+    with client:
+        auth_header = {'Authorization': get_basic_auth_header(TEST_CLIENT_ID, TEST_CLIENT_KEY)}
+        payload = {
+            'grant_type': 'password',
+            'username': TEST_USERNAME,
+            'password': TEST_PASSWORD
+        }
+        response = client.post(
+            "http://localhost:5000/v3/oauth2/tokens",
+            headers=auth_header,
+            data=json.dumps(payload),
+            content_type='application/json'
+        )
+        assert response.status_code == 200
+        assert 'access_token' in response.json['result']
+        # access_token:
+        access_token_str = response.json['result']['access_token']['access_token']
+        access_token_claims = validate_access_token(response)
+        # refresh_token:
+        refresh_token_claims = validate_refresh_token(response)
+        refresh_token_str = response.json['result']['refresh_token']['refresh_token']
+        
+        # now, revoke the tokens ----
+        # first, the access token
+        payload = {'token': access_token_str}
+        response = client.post(
+            "http://localhost:5000/v3/oauth2/tokens/revoke",
+            data=json.dumps(payload),
+            content_type='application/json'
+        )
+        assert response.status_code == 200        
+        check_access_token_table(access_token_claims, "password", True, TEST_CLIENT_ID)
+
+        # then the refresh token
+        payload = {'token': refresh_token_str}
+        response = client.post(
+            "http://localhost:5000/v3/oauth2/tokens/revoke",
+            data=json.dumps(payload),
+            content_type='application/json'
+        )
+        assert response.status_code == 200        
+
+        check_refresh_token_table(refresh_token_claims, "password", True, TEST_CLIENT_ID)
+
+## Profiles
+# get_userinfo
+# list_profiles
+# get_profile
+
+## grant type tests
 
 def test_authorization_code(client, init_db):
     # simulate the authorization approval -
@@ -394,6 +638,7 @@ def test_authorization_code_grant(client, init_db):
                          headers=headers,
                          data=json.dumps(data),
                          content_type='application/json')
+        print(f'Got result:: {rs.json}')
         assert rs.status_code == 200
         assert 'access_token' in rs.json['result']
         # validate access_token:
@@ -504,63 +749,92 @@ def test_implicit_grant(client, init_db):
         # TODO -- validate that the token returned has the correct claims.. to do this, will need to parse the token
         # from out of the raw string.
 
-def test_device_code(client, init_db):
+## Device code checks
+def test_get_device_code(client):
+    # TODO: get a device code, then use it to get a token
+    # verify that we get a access token using it
+    # verify that the code can't be used a second time to get another token
+    # verify that the device code is tied to the user in the db
     with client:
+        # get device code url
         data={'client_id': TEST_CLIENT_ID}
         
         response = client.post('http://localhost:5000/v3/oauth2/device/code',
                                 data=json.dumps(data),
                                 content_type='application/json')
-        print(response.data)
+        # print(response.json)
         assert response.status_code == 200
+        device_code = response.json["result"]["device_code"]
+        user_code = response.json["result"]["user_code"]
+        verification_url = response.json["result"]["verification_uri"]
+        assert device_code is not None
+        assert user_code is not None
+        assert verification_url is not None
+
+        # verify data is correct in table
+        check_device_code_table(TEST_CLIENT_ID, user_code, device_code, verification_url, "Created")
+
+def test_authorize_device_code(client):
+    # TODO: not sure how to do this one yet, since it tyically requires manually going to the verification url and signing in.
+    # the test_exchange_device_code func directly inserts the "Entered" status in the device_codes table to simulate this.
+    # Skipping this one for now
+    pass
+
+def test_exchange_device_code(client):
+    # directly create the device code in the DB
+    device_code = None
+    code=models.DeviceCode.generate_code()
+    user_code=models.DeviceCode.generate_user_code()
+    verification_url=models.DeviceCode.generate_verification_uri(TEST_TENANT_ID, TEST_CLIENT_ID, BASE_URL='https://localhost:5000'),
+    try:
+        device_code = models.DeviceCode(tenant_id=TEST_TENANT_ID,
+                                    username=TEST_USERNAME,
+                                    client_id=TEST_CLIENT_ID,
+                                    client_key=TEST_CLIENT_KEY,
+                                    code=code,
+                                    user_code=user_code,
+                                    status="Entered",
+                                    verification_uri=verification_url,
+                                    expiry_time=models.DeviceCode.compute_expiry(),
+                                    access_token_ttl=models.DeviceCode.set_ttl())
+    except Exception as e:
+        print(f'ERROR: exception while generating device code object:: {e}')
+    assert device_code != None
+    print(f'DEBUG: have device code object: {device_code}')
+    try:
+        models.db.session.add(device_code)
+        models.db.session.commit()
+        print(f'DEBUG: committed device code object to DB')
+    except Exception as e:
+            print(f"Got exception trying to add and commit the device code. e: {e}; type(e): {type(e)}")
+            raise Exception("Internal error saving device code. Please try again later.")
+    # verify that it was added to the db correctly
+    check_device_code_table(TEST_CLIENT_ID, user_code, code, verification_url, "Entered")
+
+    # call the tokens url with the device code
+    body = {
+        "client_id": TEST_CLIENT_ID,
+        "device_code": code,
+        "grant_type": "device_code"
+    }
+    header = {
+        "X-Tapis-Local-Tenant": "dev",
+        "content-type": "application/json"
+    }
+    response = client.post(
+        'http://localhost:5000/v3/oauth2/tokens',
+        data=json.dumps(body),
+        headers=header
+    )
+    
+    print(f'DEBUG: got response requesting token w/ device code:: {response.json}')
+
+    # verify token in response
+    assert response.status_code == 200
+    validate_access_token(response)
+
+## MFA tests
+
+## OAuth2ProviderExtCallback tests
 
 
-def test_revoke_token(client, init_db):
-    """
-    Test the revocation endpoint, and check the status of the tokens are updated on the table
-    after revoking. 
-    """
-    # first, generate an access and refresh token pair
-    with client:
-        auth_header = {'Authorization': get_basic_auth_header(TEST_CLIENT_ID, TEST_CLIENT_KEY)}
-        payload = {
-            'grant_type': 'password',
-            'username': TEST_USERNAME,
-            'password': TEST_PASSWORD
-        }
-        response = client.post(
-            "http://localhost:5000/v3/oauth2/tokens",
-            headers=auth_header,
-            data=json.dumps(payload),
-            content_type='application/json'
-        )
-        assert response.status_code == 200
-        assert 'access_token' in response.json['result']
-        # access_token:
-        access_token_str = response.json['result']['access_token']['access_token']
-        access_token_claims = validate_access_token(response)
-        # refresh_token:
-        refresh_token_claims = validate_refresh_token(response)
-        refresh_token_str = response.json['result']['refresh_token']['refresh_token']
-        
-        # now, revoke the tokens ----
-        # first, the access token
-        payload = {'token': access_token_str}
-        response = client.post(
-            "http://localhost:5000/v3/oauth2/tokens/revoke",
-            data=json.dumps(payload),
-            content_type='application/json'
-        )
-        assert response.status_code == 200        
-        check_access_token_table(access_token_claims, "password", True, TEST_CLIENT_ID)
-
-        # then the refresh token
-        payload = {'token': refresh_token_str}
-        response = client.post(
-            "http://localhost:5000/v3/oauth2/tokens/revoke",
-            data=json.dumps(payload),
-            content_type='application/json'
-        )
-        assert response.status_code == 200        
-
-        check_refresh_token_table(refresh_token_claims, "password", True, TEST_CLIENT_ID)
