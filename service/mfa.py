@@ -52,7 +52,7 @@ def check_sms(tenant_id, username):
             config_data = get_config_data(mfa_config)
 
             if config_data:
-                jwt = conf.privacy_idea_jwt if conf.privacy_idea_jwt else get_privacy_idea_jwt(config_data['privacy_idea_url'], config_data['privacy_idea_client_id'], config_data['privacy_idea_client_key'])
+                jwt = get_privacy_idea_jwt(config_data['privacy_idea_url'], config_data['privacy_idea_client_id'], config_data['privacy_idea_client_key'])
                 headers = {"Authorization": jwt}
                 logger.debug(headers)
                 data = {"serial": username}
@@ -98,7 +98,7 @@ def call_mfa(token, tenant_id, username):
 
     if "tacc" in mfa_config:
         config = get_config_data(mfa_config)
-        jwt = conf.privacy_idea_jwt if conf.privacy_idea_jwt else get_privacy_idea_jwt(config['privacy_idea_url'], config['privacy_idea_client_id'], config['privacy_idea_client_key'])
+        jwt = get_privacy_idea_jwt(config['privacy_idea_url'], config['privacy_idea_client_id'], config['privacy_idea_client_key'])
         return verify_mfa_token(config['privacy_idea_url'], jwt, token, username, config['realm'])
 
 
@@ -114,6 +114,9 @@ def get_config_data(config):
 
 
 def get_privacy_idea_jwt(url, username, password):
+    jwt = conf.get('privacy_idea_jwt')
+    if jwt is not None: 
+        return jwt
     data = {
         "username": username,
         "password": password
