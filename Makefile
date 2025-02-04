@@ -29,7 +29,7 @@ build: build.api build.migrations build.test
 
 # ----- run tests
 test: build.test
-	cd $(cwd); touch service.log; chmod a+w service.log; docker-compose run $(api)-tests;
+	cd $(cwd); touch service.log; chmod a+w service.log; docker-compose run --env MFA_GEN_CODE=MFA_GEN_CODE $(api)-tests;
 
 # ----- shutdown the currently running services
 down:
