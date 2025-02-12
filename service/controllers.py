@@ -5,10 +5,11 @@ import requests
 from requests.auth import HTTPBasicAuth
 import json
 import time
-from flask import g, request, Response, render_template, redirect, make_response, send_from_directory, session, url_for
+from flask import g, request, Response, render_template, redirect, make_response, send_from_directory, session, url_for, jsonify
 from flask_restful import Resource
 from openapi_core import openapi_request_validator
 from openapi_core.contrib.flask import FlaskOpenAPIRequest
+from jwcrypto import jwk
 import sqlalchemy
 import secrets
 import random
@@ -44,6 +45,7 @@ class OAuthMetadataResource(Resource):
     See https://datatracker.ietf.org/doc/html/rfc8414
     """
     def get(self):
+        logger.info("top of GET /v3/oauth2/.well-known/oauth-authorization-server")
         tenant_id = g.request_tenant_id
         config = tenant_configs_cache.get_config(tenant_id)
         allowable_grant_types = json.loads(config.allowable_grant_types)
@@ -203,7 +205,7 @@ class ProfilesResource(Resource):
 
 class UserInfoResource(Resource):
     def get(self):
-        logger.debug(f'top of GET /userinfo')
+        logger.debug(f'top of GET /v3/oauth2/userinfo')
         tenant_id = g.request_tenant_id
         # note that the user info endpoint is more limited for custom oauth idp extensions in general because the
         # custom OAuth server may not provider a profile endpoint.
@@ -218,7 +220,7 @@ class UserInfoResource(Resource):
 
 class ProfileResource(Resource):
     def get(self, username):
-        logger.debug(f'top of GET /profiles/{username}')
+        logger.debug(f'top of GET /v3/profiles/{username}')
         tenant_id = g.request_tenant_id
         # note that the user info endpoint is more limited for custom oauth idp extensions in general because the
         # custom OAuth server may not provider a profile endpoint.
@@ -353,6 +355,56 @@ class TenantConfigResource(Resource):
 
 
 # ---------------------------------
+# OIDC endpoints
+# ---------------------------------
+
+# class OIDCMetadataResource(Resource):
+#     """
+#     Provides the OIDC .well-known endpoint.
+#     """
+#     def get(self):
+#         logger.info("top of GET /v3/oauth2/.well-known/openid-configuration")
+#         tenant_id = g.request_tenant_id
+#         config = tenant_configs_cache.get_config(tenant_id)
+#         allowable_grant_types = json.loads(config.allowable_grant_types)
+#         tenant = t.tenant_cache.get_tenant_config(tenant_id=tenant_id)
+#         base_url = tenant.base_url
+#         json_response = {
+#             'issuer': f'{base_url}/v3/tokens',
+#             'authorization_endpoint': f'{base_url}/v3/oauth2/authorize',
+#             'token_endpoint': f'{base_url}/v3/oauth2/tokens/oidc?oidc=true',
+#             'jwks_uri': f'{base_url}/v3/oauth2/jwks',
+#             'registration_endpoint': f'{base_url}/v3/oauth2/clients',
+#             'grant_types_supported': allowable_grant_types,
+#             'userinfo_endpoint': f'{base_url}/v3/oauth2/userinfo/oidc',
+#         }
+#         return json_response #utils.ok(result=metadata, msg='OAuth OIDC metadata retrieved successfully.')
+
+
+class OIDCjwksResource(Resource):
+    """
+    Provides the OIDC jwks endpoint.
+    """
+    def get(self):
+        logger.info("top of GET /v3/oauth2/jwks")
+        tenant_id = g.request_tenant_id
+        config = tenant_configs_cache.get_config(tenant_id)
+        allowable_grant_types = json.loads(config.allowable_grant_types)
+        tenant = t.tenant_cache.get_tenant_config(tenant_id=tenant_id)
+        base_url = tenant.base_url
+        
+        # unpack jwks info from tenant public key
+        pem_key = tenant.public_key
+        key = jwk.JWK.from_pem(pem_key.encode('utf-8'))
+        jwk_json = key.export(as_dict=True)
+
+        json_response = {
+            'keys': [jwk_json]
+        }
+        return json_response #utils.ok(result=metadata, msg='OAuth OIDC metadata retrieved successfully.')
+
+
+# ---------------------------------
 # Authorization Server controllers
 # ---------------------------------
 
@@ -363,7 +415,7 @@ def check_client(use_session=False):
     and returns the associated objects.
 
     If use_session is True, this function will check for the client credentials out of the session. This is
-    used when the tenant is configured with a 3rd-party OAuth2 sever that does not pass back the original
+    used when the tenant is configured with a 3rd-party OAuth2 server that does not pass back the original
     client credentials.
     """
     # tenant_id should be determined by the request URL -
@@ -424,6 +476,8 @@ def check_client(use_session=False):
         raise errors.ResourceError("Required query parameter redirect_uri missing.")
     if not client.callback_url == client_redirect_uri:
         logout()
+        # cgarcia - I'm not sure if the uris should be exact or if only domain should match. But I'll leave this as is.
+        logger.debug(f"redirect_uri query parameter does not match registered callback_url for the client. redirect_uri: {client_redirect_uri}; callback_url: {client.callback_url}")
         raise errors.ResourceError(
             "redirect_uri query parameter does not match the registered callback_url for the client.")
     return client_id, client_redirect_uri, client_state, client, response_type
@@ -867,7 +921,7 @@ class AuthorizeResource(Resource):
     """
 
     def get(self):
-        logger.info("top of GET /oauth2/authorize")
+        logger.info("top of GET /v3/oauth2/authorize")
         is_device_flow = True if 'device_login' in session else False
         # if we are using the multi_idp custom oa2 extension type it is possible we are being redirected here, not by the 
         # original web client, but by our select_idp page, in which case we need to get the client out of the session.
@@ -1000,7 +1054,7 @@ class AuthorizeResource(Resource):
         return make_response(render_template('authorize.html', **context), 200, headers)
 
     def post(self):
-        logger.debug("top of POST /oauth2/authorize")
+        logger.info("top of POST /v3/oauth2/authorize")
         # selecting a tenant id is required before logging in -
         tenant_id = g.request_tenant_id
         if not tenant_id:
@@ -1210,7 +1264,7 @@ class OAuth2ProviderExtCallback(Resource):
       GET /v3/oauth2/extensions/oa2/callback -- receive the authorization code and exchange it for a token.
     """
     def get(self):
-        logger.debug("top of GET /oauth2/extensions/oa2/callback")
+        logger.info("top of GET /v3/oauth2/extensions/oa2/callback")
         # use tenant id to create the tenant oa2 extension config
         tenant_id = g.request_tenant_id
         session['tenant_id'] = tenant_id
@@ -1259,7 +1313,7 @@ class OAuth2ProviderExtCallback(Resource):
                                 response_type='code'))
 
 
-class TokensResource(Resource):
+def _handle_tokens_request(request, oidc=False):
     """
     Implements the oauth2/tokens endpoint for generating tokens for the following grant types:
       * password
@@ -1267,9 +1321,8 @@ class TokensResource(Resource):
       * refresh_token
       * device_code
     """
-
-    def post(self):
-        logger.debug("top of POST /oauth2/tokens")
+    if oidc or not oidc:
+        logger.info("top of POST /v3/oauth2/tokens")
         # support content-type www-form by setting the body on the request equal to the JSON        
         if request.content_type.startswith('application/x-www-form-urlencoded'):
             logger.debug(f"handling x-www-form data")
@@ -1456,6 +1509,12 @@ class TokensResource(Resource):
         }
         if idp_id:
             content['claims']['tapis/idp_id'] = idp_id
+        if oidc:
+            if client_id:
+                content['claims']['aud'] = client_id
+            content['claims']['iat'] = int(time.time())
+            content['claims']['extravar'] = username
+            content['claims']['email'] = username
 
         # only generate a refresh token when OAuth client is passed
         if client_id and client_key:
@@ -1561,8 +1620,29 @@ class TokensResource(Resource):
                   f"Contact system administrator. (Debug data: {e})"
             logger.error(msg)
             raise errors.ResourceError(f"{msg}")
-        
+
+        if oidc:
+            logger.info("Token endpoint with OIDC flag set.")
+            response_json = {
+                'access_token': result['access_token']['access_token'],
+                'expires_in': result['access_token']['expires_in'],
+                'token_type': 'Bearer',
+                'id_token': result['access_token']['id_token']}
+            logger.info(f"OIDC response: {response_json}")
+            # oidc endpoints aren't expecting our tapis 5 stanza response.
+            return jsonify(response_json)
+
         return utils.ok(result=result, msg="Token created successfully.")
+
+
+class TokensResource(Resource):
+    def post(self):
+        return _handle_tokens_request(request, oidc=False)
+
+
+class OIDCTokensResource(Resource):
+    def post(self):
+        return _handle_tokens_request(request, oidc=True)
 
 
 class V2TokenResource(Resource):
