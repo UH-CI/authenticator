@@ -800,7 +800,7 @@ def test_authorization_code(client, init_db):
         assert f'code={auth_code.code}' in response_str
 
 
-def test_authorization_code_grant(client):
+def test_authorization_code_grant(client, init_db):
     with client:
         # look up the authorization_code from the previous test:
         auth_code = models.AuthorizationCode.query.filter_by(tenant_id=TEST_TENANT_ID,
