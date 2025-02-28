@@ -47,7 +47,7 @@ def init_db():
                 'active': True
                 }
         models.delete_tenant_from_db(TEST_TENANT_ID)
-        print(f'got tapisconf:: {tapisconf}')
+        # print(f'got tapisconf:: {tapisconf}')
         config = {
             "tenant_id":TEST_TENANT_ID,
             "allowable_grant_types":json.dumps(["password", "implicit", "authorization_code", "refresh_token", "device_code"]),
@@ -356,52 +356,94 @@ def test_get_metadata(client):
 
 ## Admin
 # get_config
-# def test_get_admin_config(client, tapis_service_jwt):
-#     with client:
-#         header = {
-#             'X-Tapis-Token': tapis_service_jwt,
-#             'X-Tapis-Tenant': TEST_TENANT_ID,
-#             'X-Tapis-User': 'authenticator'
-#         }
-#         response = client.get('http://localhost:5000/v3/oauth2/admin/config', headers=header)
-#         print(f'got response:: {response.json}')
-#         assert response.status_code == 200
-#         # TODO: this doesn't seem to work.
-#         # retrieved_config = response.json['result']
-#         # tenant_config = tenant_configs_cache.get_config(TEST_TENANT_ID).serialize
-#         # print(f'got config:: {retrieved_config}')
-#         # print(f'checking against cached config: {tenant_config}')
-#         # assert retrieved_config == tenant_config
+def test_get_admin_config(client, tapis_service_jwt, init_db):
+    with client:
+        header = {
+            'X-Tapis-Token': tapis_service_jwt,
+            'X-Tapis-Tenant': TEST_TENANT_ID,
+            'X-Tapis-User': 'authenticator'
+        }
+        response = client.get('http://localhost:5000/v3/oauth2/admin/config', headers=header)
+        print(f'got response:: {response.json}')
+        assert response.status_code == 200
+        # TODO: this doesn't seem to work.
+        retrieved_config = response.json['result']
+        print(f'got config:: {retrieved_config}')
+        # tenant_config = tenant_configs_cache.get_config(TEST_TENANT_ID)
+        tenant_configs = tenant_configs_cache.load_tenant_config_cache()
+        tenant_config = [conf for conf in tenant_configs if conf.tenant_id == TEST_TENANT_ID][0]
+        tenant_config_data = tenant_config.serialize
+        assert retrieved_config == tenant_config_data
 
-# # update_config
-# def test_update_admin_config(client, tapis_service_jwt):
-#     with client:
-#         # get the config first, so we can compare after the change
-#         current_config = tenant_configs_cache.get_config(TEST_TENANT_ID).serialize
-#         # just change one thing
-#         payload = {
-#             "impers_oauth_client_id": "TEST"
-#         }
-#         # make request
-#         header = {
-#             'X-Tapis-Token': tapis_service_jwt,
-#             'X-Tapis-Tenant': TEST_TENANT_ID,
-#             'X-Tapis-User': 'authenticator'
-#         }
-#         response = client.put(
-#             'http://localhost:5000/v3/oauth2/admin/config', 
-#             data=json.dumps(payload), 
-#             headers=header, 
-#             content_type="application/json"
-#         )
-#         print(f'DEBUG: got response:: {response}')
-#         assert response.status_code == 200
-        
-        
+# # # update_config
+def test_update_admin_config(client, tapis_service_jwt):
+    with client:
+        # get current config
+        current_config = [d for d in tenant_configs_cache.load_tenant_config_cache() if d.tenant_id == TEST_TENANT_ID][0].serialize
+
+        # just change one thing
+        payload = {
+            "impers_oauth_client_id": "TEST"
+        }
+        # make request
+        header = {
+            'X-Tapis-Token': tapis_service_jwt,
+            'X-Tapis-Tenant': TEST_TENANT_ID,
+            'X-Tapis-User': 'authenticator'
+        }
+        response = client.put(
+            'http://localhost:5000/v3/oauth2/admin/config', 
+            data=json.dumps(payload), 
+            headers=header, 
+            content_type="application/json"
+        )
+        print(f'got response:: {response.json}')
+        assert response.status_code == 200
+        # TODO: compare the change to the original
+        updated_config = response.json['result']
+        print(f'DEBUG:: Comparing \n\t{updated_config}\n\t against \n\t{current_config}')
+        assert response.json['result'] != current_config
+
+        # change it back
+        payload = {"impers_oauth_client_id": current_config["impers_oauth_client_id"]}
+        response = client.put(
+            'http://localhost:5000/v3/oauth2/admin/config', 
+            data=json.dumps(payload), 
+            headers=header, 
+            content_type="application/json"
+        )
+        print(f'got response:: {response.json}')
+        assert response.status_code == 200
 
      
 ## Clients
 
+# utility setup / teardown
+def insert_test_client(client):
+    # first insert a new client into the db so there's no intersections
+    new_client_id = f'{TEST_CLIENT_ID}__update_test'
+    models.add_client_to_db({
+        'tenant_id': TEST_TENANT_ID,
+        "username": TEST_USERNAME,
+        'client_id': new_client_id,
+        'client_key': TEST_CLIENT_KEY,
+        "display_name": "Tapis Authenticator Testsuite",
+        "callback_url": TEST_CLIENT_REDIRECT_URI,
+        'create_time': datetime.datetime.utcnow(),
+        'last_update_time': datetime.datetime.utcnow(),
+        'active': True
+    })
+    new_client = models.Client.query.filter_by(
+            tenant_id=TEST_TENANT_ID,
+            client_id=new_client_id,
+            client_key=TEST_CLIENT_KEY
+        ).first()
+    assert new_client is not None # fail the test if we don't have the test client
+    return new_client
+
+def remove_test_client(client, to_delete):
+    models.db.session.delete(to_delete)
+    models.db.session.commit()
 
 def test_invalid_post(client):
     with client:
@@ -421,69 +463,99 @@ def test_authenticator_list_clients(client):
 # create_client
 def test_authenticator_create_clients(client, tapis_jwt): ## TODO: this works, but doing it twice violates uniqueness constraint. Need to find a way to reliably erase it without using another endpoint
     # result = client.authenticator.create_client(client_id=TEST_CLIENT_ID, callback_url='https://foo.example.com/oauth2/callback')
-    header = {'X-Tapis-Token': tapis_jwt}
-    payload = {
-        "client_id": TEST_CLIENT_ID,
-        "client_key": TEST_CLIENT_KEY,
-        "callback_url": TEST_CLIENT_REDIRECT_URI,
-        "display_name": "A Test Client",
-        "description": "This is a client just for testing"
-    }
-    result = client.post(
-        'http://localhost:5000/v3/oauth2/clients', 
-        headers=header,
-        data=json.dumps(payload),
-        content_type='application/json'
-    )
-    
-    assert result.status_code == 200
-    # check the clients table to make sure it was created in the DB
-    check_clients_table(TEST_CLIENT_ID, TEST_CLIENT_REDIRECT_URI, 'A Test Client', "This is a client just for testing")
+    with client:
+        new_client_id = f'{TEST_CLIENT_ID}__create_test'
+        header = {'X-Tapis-Token': tapis_jwt}
+        payload = {
+            "client_id": new_client_id,
+            "client_key": TEST_CLIENT_KEY,
+            "callback_url": TEST_CLIENT_REDIRECT_URI,
+            "display_name": "A Test Client",
+            "description": "This is a client just for testing"
+        }
+        result = client.post(
+            'http://localhost:5000/v3/oauth2/clients', 
+            headers=header,
+            data=json.dumps(payload),
+            content_type='application/json'
+        )
+        
+        assert result.status_code == 200
+        # check the clients table to make sure it was created in the DB
+        check_clients_table(new_client_id, TEST_CLIENT_REDIRECT_URI, 'A Test Client', "This is a client just for testing")
+        # cleanup
+        got_client = models.Client.query.filter_by(
+            tenant_id=TEST_TENANT_ID,
+            client_id=new_client_id,
+            client_key=TEST_CLIENT_KEY
+        ).first()
+        assert got_client is not None # fail if we can't find the client. This means the test didn't work
+
+        # delete the added client
+        models.db.session.delete(got_client)
+        models.db.session.commit()
+
     
 # Get client details
 def test_authenticator_get_client(client, tapis_jwt):
+    # create a new client so there's no collisions
+    new_client = insert_test_client(client)
+
     with client:
         header = {'X-Tapis-Token': tapis_jwt}
-        url = f'http://localhost:5000/v3/oauth2/clients/{TEST_CLIENT_ID}'
-        result = client.get(f'http://localhost:5000/v3/oauth2/clients/{TEST_CLIENT_ID}', headers=header)
+        url = f'http://localhost:5000/v3/oauth2/clients/{new_client.client_id}'
+
+        result = client.get(
+            url, 
+            headers=header
+        )
+
+        print(f'DEBUG:: got response getting client: {result.json}')
         assert result.status_code == 200 
         check_clients_table(TEST_CLIENT_ID)
+    
+    # cleanup
+    remove_test_client(client, new_client)
 
 # Update client details
 def test_authenticator_update_client(client, tapis_jwt):
+    # first insert a new client into the db so there's no intersections
+    new_client = insert_test_client(client)
+
+    # now update it
     header = {'X-Tapis-Token': tapis_jwt}
     payload = json.dumps({
         "callback_url": "http://localhost:5000/testsuite/update_client_test"
     })
     result = client.put(
-        f'http://localhost:5000/v3/oauth2/clients/{TEST_CLIENT_ID}', 
+        f'http://localhost:5000/v3/oauth2/clients/{new_client.client_id}', 
         headers=header, 
         data=payload,
         content_type='application/json'
     )
-    print(f'DEBUG: got result of update client:: {result}')
+    print(f'DEBUG: got result of update client:: {result.json}')
     assert result.status_code == 200
-    check_clients_table(TEST_CLIENT_ID)
-    # TODO: we should create a better setup / teardown for these tests
-    payload = json.dumps({
-        "callback_url": TEST_CLIENT_REDIRECT_URI
-    })
-    result = client.put(
-        f'http://localhost:5000/v3/oauth2/clients/{TEST_CLIENT_ID}', 
-        headers=header, 
-        data=payload,
-        content_type='application/json'
-    )
-    assert result.status_code == 200 # fail if we can't put it back correctly
+    check_clients_table(new_client.client_id, callback_url='http://localhost:5000/testsuite/update_client_test')
+    # cleanup
+    remove_test_client(client, new_client)
     
 
 # Permanantly set a client to inactive
-def test_authenticator_delete_clients(client):
-    header = {'X-Tapis-Token': get_jwt(client)}
-    result = client.delete(f'http://localhost:5000/v3/oauth2/clients/{TEST_CLIENT_ID}', headers=header)
+def test_authenticator_delete_clients(client, tapis_jwt):
+    # insert a new client to avoid collision
+    new_client = insert_test_client(client)
+    
+    header = {'X-Tapis-Token': tapis_jwt}
+    result = client.delete(
+        f'http://localhost:5000/v3/oauth2/clients/{new_client.client_id}', 
+        headers=header
+    )
     print(f'DEBUG: got result of delete call: {result.json}')
     assert result.status_code == 200
-    check_clients_table(TEST_CLIENT_ID, negative=True)
+    check_clients_table(new_client.client_id, negative=True)
+
+    # cleanup
+    remove_test_client(client, new_client)
 
 ## Tokens
 # Generate a Tapis JWT
@@ -952,7 +1024,8 @@ def test_get_device_code(client):
 def test_authorize_device_code(client):
     # TODO: not sure how to do this one yet, since it tyically requires manually going to the verification url and signing in.
     # the test_exchange_device_code func directly inserts the "Entered" status in the device_codes table to simulate this.
-    # Skipping this one for now
+    # Skipping this one for now 
+    # Maybe look more into modifying context, like https://flask.palletsprojects.com/en/stable/testing/#tests-that-depend-on-an-active-context 
     pass
 
 def test_exchange_device_code(client):
