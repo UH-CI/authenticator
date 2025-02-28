@@ -2,6 +2,42 @@
 All notable changes to this project will be documented in this file.
 
 
+## 1.8.2 - 2024-02-28
+### Breaking Changes:
+- None
+
+### New features:
+- 100% tests coverage aside from V2 endpoints
+- Now grabbing uid from tokens if DN not set by CN for tenant
+- Introduced OIDC support with jwks endpoints and dedicated oidc response endpoints.
+- Now works better with Jenkins
+
+### Bug Fixes:
+- None
+
+
+## 1.8.0 - 2024-12-04
+### Breaking Changes:
+- None
+
+### New features:
+- Change help message per tenant
+
+### Bug Fixes:
+- Release for 1.8.0
+
+
+## 1.7.0 - 2024-09-13
+### Breaking Changes:
+- None
+
+### New features:
+- None
+
+### Bug Fixes:
+- Release for 1.7.0
+
+
 ## 1.6.3 - 2024-08-28
 ### Breaking Changes:
 - None

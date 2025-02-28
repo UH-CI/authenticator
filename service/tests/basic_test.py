@@ -5,7 +5,8 @@ import json
 import pyotp
 import os
 
-from tapisservice.auth import validate_token
+from tapisservice.auth import validate_token, get_service_tapis_client
+from tapisservice.tenants import tenant_cache as auth_tenants
 from tapisservice.config import conf as tapisconf
 from service.models import tenant_configs_cache, DeviceCode
 from service.api import app
@@ -23,6 +24,8 @@ TEST_USERNAME = 'testuser1'
 TEST_PASSWORD = 'testuser1'
 MFA_USERNAME = 'cicsvc'
 MFA_GEN_CODE = os.environ.get('MFA_GEN_CODE')
+TAPIS_JWT = None
+TAPIS_SERVICE_JWT = None
 
 @pytest.fixture
 def client():
@@ -44,7 +47,7 @@ def init_db():
                 'active': True
                 }
         models.delete_tenant_from_db(TEST_TENANT_ID)
-        print(f'got tapisconf:: {tapisconf}')
+        # print(f'got tapisconf:: {tapisconf}')
         config = {
             "tenant_id":TEST_TENANT_ID,
             "allowable_grant_types":json.dumps(["password", "implicit", "authorization_code", "refresh_token", "device_code"]),
@@ -92,6 +95,7 @@ def init_db():
         if not client:
             assert False
 
+@pytest.fixture()
 def teardown_module():
     # clean up all the mess we made
     with app.app_context():
@@ -208,7 +212,6 @@ def check_device_code_table(client_id, user_code, device_code, verification_url,
     assert retrieved.status == status
     assert retrieved.verification_uri == verification_url
 
-
 def validate_refresh_token(response):
     """
     Validate that a response has a refresh token and it is properly formatted.
@@ -226,15 +229,13 @@ def validate_refresh_token(response):
     assert claims['tapis/access_token']['sub'] == f'{TEST_USERNAME}@{TEST_TENANT_ID}'
     return claims
 
-
 def get_jwt(client):
-    # TODO: add assertions for failing to get a token -- this should fail the current test somehow
-    # auth_header = {'Authorization': get_basic_auth_header(TEST_CLIENT_ID, TEST_CLIENT_KEY)}
     payload = {
         'grant_type': 'password',
         'username': TEST_USERNAME,
         'password': TEST_PASSWORD
     }
+    # print(f'DEBUG:: about to get token with payload: {json.dumps(payload, indent=4)}')
     response = client.post(
         "http://localhost:5000/v3/oauth2/tokens",
         # headers=auth_header,
@@ -244,9 +245,37 @@ def get_jwt(client):
     assert response.status_code == 200
     assert 'access_token' in response.json['result']
     # access_token:
+    # print(f'DEBUG:: Successfully got access token for {TEST_USERNAME}')
     access_token_str = response.json['result']['access_token']['access_token']
     return access_token_str
 
+@pytest.fixture
+def tapis_jwt(client):
+    if globals()['TAPIS_JWT'] is not None:
+        return globals()['TAPIS_JWT']
+    jwt = get_jwt(client)
+    globals()['TAPIS_JWT'] = jwt
+    return jwt
+
+@pytest.fixture
+def tapis_service_jwt(client):
+    if globals()['TAPIS_SERVICE_JWT'] is not None:
+        return globals()['TAPIS_SERVICE_JWT']
+    t = get_service_tapis_client(tenants=auth_tenants, 
+                             # todo -- change back once tokens api update is in prod
+                             resource_set='dev'
+                            )
+    service_jwt = t.service_tokens['admin']['access_token'].access_token
+    # jwt = get_jwt(client, username='admin', password=tapisconf['service_password'], admin=True)
+    # jwt = get_service_tapis_client(tenant_id=tapisconf['service_tenant_id'],
+    #                                 base_url=None,
+    #                                 jwt=None,
+    #                                 resource_set='tapipy', #todo -- change back to resource_set='tapipy'
+    #                                 custom_spec_dict=None,
+    #                                 download_latest_specs=False,
+    #                                 tenants=None):
+    globals()['TAPIS_SERVICE_JWT'] = service_jwt
+    return service_jwt
 
 @pytest.fixture
 def mfa_token(tokencode=None):
@@ -256,9 +285,7 @@ def mfa_token(tokencode=None):
     """
     if tokencode is None:
         tokencode = MFA_GEN_CODE
-    print(f'DEBUG:: generating MFA token with tokencode: {tokencode}')
-    if tokencode is None:
-        print(f'ERROR! tokencode should not be None! Env: {os.environ.items()}')
+    # print(f'DEBUG:: generating MFA token with tokencode: {tokencode}')
     totp = pyotp.TOTP(tokencode)
     return totp.now()
 
@@ -276,7 +303,6 @@ def test_get_jwt(client):
     print(f'Starting test of getting JWT')
     result = get_jwt(client)
     print(f'got result = {result}')
-
 
 # get mfa config
 def test_get_mfa_config(client):
@@ -330,12 +356,94 @@ def test_get_metadata(client):
 
 ## Admin
 # get_config
-# TODO
-# update_config
-# TODO
+def test_get_admin_config(client, tapis_service_jwt, init_db):
+    with client:
+        header = {
+            'X-Tapis-Token': tapis_service_jwt,
+            'X-Tapis-Tenant': TEST_TENANT_ID,
+            'X-Tapis-User': 'authenticator'
+        }
+        response = client.get('http://localhost:5000/v3/oauth2/admin/config', headers=header)
+        print(f'got response:: {response.json}')
+        assert response.status_code == 200
+        # TODO: this doesn't seem to work.
+        retrieved_config = response.json['result']
+        print(f'got config:: {retrieved_config}')
+        # tenant_config = tenant_configs_cache.get_config(TEST_TENANT_ID)
+        tenant_configs = tenant_configs_cache.load_tenant_config_cache()
+        tenant_config = [conf for conf in tenant_configs if conf.tenant_id == TEST_TENANT_ID][0]
+        tenant_config_data = tenant_config.serialize
+        assert retrieved_config == tenant_config_data
+
+# # # update_config
+def test_update_admin_config(client, tapis_service_jwt):
+    with client:
+        # get current config
+        current_config = [d for d in tenant_configs_cache.load_tenant_config_cache() if d.tenant_id == TEST_TENANT_ID][0].serialize
+
+        # just change one thing
+        payload = {
+            "impers_oauth_client_id": "TEST"
+        }
+        # make request
+        header = {
+            'X-Tapis-Token': tapis_service_jwt,
+            'X-Tapis-Tenant': TEST_TENANT_ID,
+            'X-Tapis-User': 'authenticator'
+        }
+        response = client.put(
+            'http://localhost:5000/v3/oauth2/admin/config', 
+            data=json.dumps(payload), 
+            headers=header, 
+            content_type="application/json"
+        )
+        print(f'got response:: {response.json}')
+        assert response.status_code == 200
+        # TODO: compare the change to the original
+        updated_config = response.json['result']
+        print(f'DEBUG:: Comparing \n\t{updated_config}\n\t against \n\t{current_config}')
+        assert response.json['result'] != current_config
+
+        # change it back
+        payload = {"impers_oauth_client_id": current_config["impers_oauth_client_id"]}
+        response = client.put(
+            'http://localhost:5000/v3/oauth2/admin/config', 
+            data=json.dumps(payload), 
+            headers=header, 
+            content_type="application/json"
+        )
+        print(f'got response:: {response.json}')
+        assert response.status_code == 200
+
      
 ## Clients
 
+# utility setup / teardown
+def insert_test_client(client):
+    # first insert a new client into the db so there's no intersections
+    new_client_id = f'{TEST_CLIENT_ID}__update_test'
+    models.add_client_to_db({
+        'tenant_id': TEST_TENANT_ID,
+        "username": TEST_USERNAME,
+        'client_id': new_client_id,
+        'client_key': TEST_CLIENT_KEY,
+        "display_name": "Tapis Authenticator Testsuite",
+        "callback_url": TEST_CLIENT_REDIRECT_URI,
+        'create_time': datetime.datetime.utcnow(),
+        'last_update_time': datetime.datetime.utcnow(),
+        'active': True
+    })
+    new_client = models.Client.query.filter_by(
+            tenant_id=TEST_TENANT_ID,
+            client_id=new_client_id,
+            client_key=TEST_CLIENT_KEY
+        ).first()
+    assert new_client is not None # fail the test if we don't have the test client
+    return new_client
+
+def remove_test_client(client, to_delete):
+    models.db.session.delete(to_delete)
+    models.db.session.commit()
 
 def test_invalid_post(client):
     with client:
@@ -344,7 +452,7 @@ def test_invalid_post(client):
 
 
 # list_clients
-def test_authenticator_list_clients(client, capsys):
+def test_authenticator_list_clients(client):
     # result = client.authenticator.list_clients()
     with client:
         header = {'X-Tapis-Token': get_jwt(client)}
@@ -353,40 +461,101 @@ def test_authenticator_list_clients(client, capsys):
 
 
 # create_client
-def test_authenticator_create_clients(client, capsys): ## TODO: this works, but doing it twice violates uniqueness constraint. Need to find a way to reliably erase it without using another endpoint
+def test_authenticator_create_clients(client, tapis_jwt): ## TODO: this works, but doing it twice violates uniqueness constraint. Need to find a way to reliably erase it without using another endpoint
     # result = client.authenticator.create_client(client_id=TEST_CLIENT_ID, callback_url='https://foo.example.com/oauth2/callback')
-    header = {'X-Tapis-Token': get_jwt(client)}
-    payload = {
-        "client_id": TEST_CLIENT_ID,
-        "client_key": TEST_CLIENT_KEY,
-        "callback_url": TEST_CLIENT_REDIRECT_URI,
-        "display_name": "A Test Client",
-        "description": "This is a client just for testing"
-    }
-    result = client.post(
-        'http://localhost:5000/v3/oauth2/clients', 
-        headers=header,
-        data=json.dumps(payload),
-        content_type='application/json'
-    )
-    
-    assert result.status_code == 200
-    # check the clients table to make sure it was created in the DB
-    check_clients_table(TEST_CLIENT_ID, TEST_CLIENT_REDIRECT_URI, 'A Test Client', "This is a client just for testing")
+    with client:
+        new_client_id = f'{TEST_CLIENT_ID}__create_test'
+        header = {'X-Tapis-Token': tapis_jwt}
+        payload = {
+            "client_id": new_client_id,
+            "client_key": TEST_CLIENT_KEY,
+            "callback_url": TEST_CLIENT_REDIRECT_URI,
+            "display_name": "A Test Client",
+            "description": "This is a client just for testing"
+        }
+        result = client.post(
+            'http://localhost:5000/v3/oauth2/clients', 
+            headers=header,
+            data=json.dumps(payload),
+            content_type='application/json'
+        )
+        
+        assert result.status_code == 200
+        # check the clients table to make sure it was created in the DB
+        check_clients_table(new_client_id, TEST_CLIENT_REDIRECT_URI, 'A Test Client', "This is a client just for testing")
+        # cleanup
+        got_client = models.Client.query.filter_by(
+            tenant_id=TEST_TENANT_ID,
+            client_id=new_client_id,
+            client_key=TEST_CLIENT_KEY
+        ).first()
+        assert got_client is not None # fail if we can't find the client. This means the test didn't work
+
+        # delete the added client
+        models.db.session.delete(got_client)
+        models.db.session.commit()
+
     
 # Get client details
-# TODO
+def test_authenticator_get_client(client, tapis_jwt):
+    # create a new client so there's no collisions
+    new_client = insert_test_client(client)
+
+    with client:
+        header = {'X-Tapis-Token': tapis_jwt}
+        url = f'http://localhost:5000/v3/oauth2/clients/{new_client.client_id}'
+
+        result = client.get(
+            url, 
+            headers=header
+        )
+
+        print(f'DEBUG:: got response getting client: {result.json}')
+        assert result.status_code == 200 
+        check_clients_table(TEST_CLIENT_ID)
+    
+    # cleanup
+    remove_test_client(client, new_client)
 
 # Update client details
-# TODO
+def test_authenticator_update_client(client, tapis_jwt):
+    # first insert a new client into the db so there's no intersections
+    new_client = insert_test_client(client)
+
+    # now update it
+    header = {'X-Tapis-Token': tapis_jwt}
+    payload = json.dumps({
+        "callback_url": "http://localhost:5000/testsuite/update_client_test"
+    })
+    result = client.put(
+        f'http://localhost:5000/v3/oauth2/clients/{new_client.client_id}', 
+        headers=header, 
+        data=payload,
+        content_type='application/json'
+    )
+    print(f'DEBUG: got result of update client:: {result.json}')
+    assert result.status_code == 200
+    check_clients_table(new_client.client_id, callback_url='http://localhost:5000/testsuite/update_client_test')
+    # cleanup
+    remove_test_client(client, new_client)
+    
 
 # Permanantly set a client to inactive
-def test_authenticator_delete_clients(client):
-    header = {'X-Tapis-Token': get_jwt(client)}
-    result = client.delete(f'http://localhost:5000/v3/oauth2/clients/{TEST_CLIENT_ID}', headers=header)
+def test_authenticator_delete_clients(client, tapis_jwt):
+    # insert a new client to avoid collision
+    new_client = insert_test_client(client)
+    
+    header = {'X-Tapis-Token': tapis_jwt}
+    result = client.delete(
+        f'http://localhost:5000/v3/oauth2/clients/{new_client.client_id}', 
+        headers=header
+    )
     print(f'DEBUG: got result of delete call: {result.json}')
     assert result.status_code == 200
-    check_clients_table(TEST_CLIENT_ID, negative=True)
+    check_clients_table(new_client.client_id, negative=True)
+
+    # cleanup
+    remove_test_client(client, new_client)
 
 ## Tokens
 # Generate a Tapis JWT
@@ -556,7 +725,26 @@ def test_password_grant_no_client(client, init_db):
     assert 'refresh_token' not in response.json['result']
 
 # Create a v2 bearer token from a Tapis v3 JWT
-# TODO
+# def test_get_v2_bearer_token(client, tapis_jwt):
+#     with client:
+#         payload = json.dumps(
+#             {
+#                 "access_token": tapis_jwt
+#             }
+#         )
+#         header = ({
+#             "X-Tapis-Token": tapis_jwt
+#         })
+#         result = client.post(
+#             'http://localhost:5000/v3/oauth2/v2/token',
+#             data=payload,
+#             headers=header,
+#             content_type='application/json'
+#         )
+#         print(f'DEBUG:: got result generating v2 token: {result.json}')
+#         assert result.status_code == 200
+#         raise Exception()
+## TODO!!! this is likely deprecated now that v2 is down...
 
 # Revoke a token 
 def test_revoke_token(client, init_db):
@@ -609,15 +797,43 @@ def test_revoke_token(client, init_db):
 
         check_refresh_token_table(refresh_token_claims, "password", True, TEST_CLIENT_ID)
 
+## Device Code
 # Note: Device code checks are below
 
 ## Profiles
 # get_userinfo
-# TODO
+def test_get_userinfo(client, tapis_jwt):
+    with client:
+        header = {
+            "X-Tapis-Token": tapis_jwt
+        }
+        result = client.get(
+            'http://localhost:5000/v3/oauth2/userinfo',
+            headers=header
+        )
+        assert result.status_code == 200
 # list_profiles
-# TODO
+def test_list_profiles(client, tapis_jwt):
+    with client:
+        header = {
+            "X-Tapis-Token": tapis_jwt
+        }
+        result = client.get(
+            'http://localhost:5000/v3/oauth2/profiles',
+            headers=header
+        )
+        assert result.status_code == 200
 # get_profile
-# TODO
+def test_get_profile(client, tapis_jwt):
+    with client:
+        header = {
+            "X-Tapis-Token": tapis_jwt
+        }
+        result = client.get(
+            f'http://localhost:5000/v3/oauth2/profiles/{TEST_USERNAME}',
+            headers=header
+        )
+        assert result.status_code == 200
 
 ## grant type tests
 
@@ -786,10 +1002,6 @@ def test_implicit_grant(client, init_db):
 
 ## Device code checks
 def test_get_device_code(client):
-    # TODO: get a device code, then use it to get a token
-    # verify that we get a access token using it
-    # verify that the code can't be used a second time to get another token
-    # verify that the device code is tied to the user in the db
     with client:
         # get device code url
         data={'client_id': TEST_CLIENT_ID}
@@ -812,7 +1024,8 @@ def test_get_device_code(client):
 def test_authorize_device_code(client):
     # TODO: not sure how to do this one yet, since it tyically requires manually going to the verification url and signing in.
     # the test_exchange_device_code func directly inserts the "Entered" status in the device_codes table to simulate this.
-    # Skipping this one for now
+    # Skipping this one for now 
+    # Maybe look more into modifying context, like https://flask.palletsprojects.com/en/stable/testing/#tests-that-depend-on-an-active-context 
     pass
 
 def test_exchange_device_code(client):
@@ -869,7 +1082,6 @@ def test_exchange_device_code(client):
     validate_access_token(response)
 
 ## MFA tests
-# TODO
 def test_mfa_valid_code(mfa_token):
     # uses the cicsvc creds to auth. 
     response = mfa.call_mfa(mfa_token, TEST_TENANT_ID, MFA_USERNAME)

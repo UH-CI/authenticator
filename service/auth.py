@@ -55,7 +55,7 @@ def authentication():
     # The authenticator uses different authentication methods for different endpoints. For example, the service
     # APIs such as clients and profiles use pure JWT authentication, while the OAuth endpoints use Basic Authentication
     # with OAuth client credentials.
-    logger.debug(f"base_url: {request.base_url}; url_rule: {request.url_rule}")
+    logger.debug(f"Top of authentication(). base_url: {request.base_url}; url_rule: {request.url_rule}")
     if not hasattr(request, 'url_rule') or not hasattr(request.url_rule, 'rule') or not request.url_rule.rule:
         raise common_errors.ResourceError("The endpoint and HTTP method combination "
                                           "are not available from this service.")
@@ -65,6 +65,12 @@ def authentication():
         logger.debug(".well-known endpoint; request is allowed to be made unauthenticated.")
         auth.resolve_tenant_id_for_request()
         return True
+
+    if "/v3/oauth2/jwks" in request.url_rule.rule:
+        logger.debug("jwks endpoint; request is allowed to be made unauthenticated.")
+        auth.resolve_tenant_id_for_request()
+        return True
+
     # only the authenticator's own service token and tenant admins for the tenant can retrieve or modify the tenant
     # config
     if '/v3/oauth2/admin' in request.url_rule.rule:
@@ -192,7 +198,7 @@ def authentication():
                 raise common_errors.BaseTapisError("Unable to resolve tenant_id for request.")
             return True
 
-    # Token Revokcation Endpoint -----
+    # Token Revocation Endpoint -----
     if '/v3/oauth2/tokens/revoke' in request.url_rule.rule:
         # anyone with a token is currently allowed to revoke it. the only issue is whether this tokens API
         # should revoke it. 
