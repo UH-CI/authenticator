@@ -5,15 +5,14 @@ import requests
 from requests.auth import HTTPBasicAuth
 import json
 import time
-from flask import g, request, Response, render_template, redirect, make_response, send_from_directory, session, url_for
+from flask import g, request, Response, render_template, redirect, make_response, send_from_directory, session, url_for, jsonify
 from flask_restful import Resource
-# TODO: tapipy-1.4.0
-# from openapi_core.shortcuts import RequestValidator
-# from openapi_core.wrappers.flask import FlaskOpenAPIRequest
 from openapi_core import openapi_request_validator
 from openapi_core.contrib.flask import FlaskOpenAPIRequest
+from jwcrypto import jwk
 import sqlalchemy
 import secrets
+import random
 
 from tapisservice import errors
 from tapisservice.tapisflask import utils
@@ -25,7 +24,7 @@ from service.errors import InvalidPasswordError
 from service.models import db, TenantConfig, AccessTokens, RefreshTokens, Client, TokenRequestBody, Token, AuthorizationCode, DeviceCode, token_webapp_clients, tenant_configs_cache
 from service.ldap import list_tenant_users, get_tenant_user, check_username_password
 from service.oauth2ext import OAuth2ProviderExtension
-from service.mfa import needs_mfa, call_mfa, check_mfa_expired
+from service.mfa import needs_mfa, call_mfa, check_mfa_expired, check_sms, send_sms
 
 
 # get the logger instance -
@@ -46,6 +45,7 @@ class OAuthMetadataResource(Resource):
     See https://datatracker.ietf.org/doc/html/rfc8414
     """
     def get(self):
+        logger.info("top of GET /v3/oauth2/.well-known/oauth-authorization-server")
         tenant_id = g.request_tenant_id
         config = tenant_configs_cache.get_config(tenant_id)
         allowable_grant_types = json.loads(config.allowable_grant_types)
@@ -68,25 +68,31 @@ class ClientsResource(Resource):
     """
 
     def get(self):
+        logger.debug("top of GET /clients")
         show_inactive = request.args.get('show_inactive', False)
         if show_inactive:
-            clients = Client.query.filter_by(tenant_id=g.tenant_id, username=g.username)
+            clients = Client.query.filter_by(tenant_id=g.request_tenant_id, username=g.request_username)
         else: 
-            clients = Client.query.filter_by(tenant_id=g.tenant_id, username=g.username, active=True)
+            clients = Client.query.filter_by(tenant_id=g.request_tenant_id, username=g.request_username, active=True)
         return utils.ok(result=[cl.serialize for cl in clients], msg="Clients retrieved successfully.")
 
     def post(self):
-        # TODO: tapipy-1.4.0
-        # validator = RequestValidator(utils.spec)
-        # result = validator.validate(FlaskOpenAPIRequest(request))
+        logger.debug("top of POST /clients")
         result = openapi_request_validator.validate(utils.spec, FlaskOpenAPIRequest(request))
         if result.errors:
             raise errors.ResourceError(msg=f'Invalid POST data: {result.errors}.')
         validated_body = result.body
         data = Client.get_derived_values(validated_body)
+        data.update({'tenant_id': g.request_tenant_id, 'username': g.request_username})
+        g.tenant_id = g.request_tenant_id
+        g.username = g.request_username
         client = Client(**data)
         logger.debug(f"creating new client; data: {data}; "
-                     f"client: {client}")
+                     f"client: {client}; "
+                     f"g.request_tenant_id: {g.request_tenant_id}; "
+                     f"g.tenant_id: {g.tenant_id}; "
+                     f"g.request_username: {g.request_username}; "
+                     f"g.username: {g.username}")
         try:
             db.session.add(client)
             db.session.commit()
@@ -109,7 +115,10 @@ class ClientResource(Resource):
     """
 
     def get(self, client_id):
-        client = Client.query.filter_by(tenant_id=g.tenant_id, client_id=client_id).first()
+        logger.debug("top of GET /clients/{client_id}")
+        g.tenant_id = g.request_tenant_id
+        g.username = g.request_username
+        client = Client.query.filter_by(tenant_id=g.request_tenant_id, client_id=client_id).first()
         if not client:
             raise errors.ResourceError(msg=f'No client found with id {client_id}.')
         if not client.username == g.username:
@@ -124,15 +133,16 @@ class ClientResource(Resource):
             raise errors.ResourceError("Changing client_key not currently supported.")
         if 'description' in request.json:
             raise errors.ResourceError("Changing description not currently supported.")
-        logger.debug("got past checks for unsupported fields.")
-        client = Client.query.filter_by(tenant_id=g.tenant_id, client_id=client_id).first()
+        logger.debug(f"got past checks for unsupported fields. using tenant_id: {g.request_tenant_id}; client_id: {client_id}")
+        g.tenant_id = g.request_tenant_id
+        g.username = g.request_username
+        clients = Client.query.filter_by(tenant_id=g.request_tenant_id, client_id=client_id)
+        client = clients.first()
+        logger.debug(f"clients: {clients}; client: {client}")
         if not client:
             raise errors.ResourceError(msg=f'No client found with id {client_id}.')
         if not client.username == g.username:
             raise errors.PermissionsError("Not authorized for this client.")
-        # TODO: for tapipy-1.4.0
-        # validator = RequestValidator(utils.spec)
-        # result = validator.validate(FlaskOpenAPIRequest(request))
         result = openapi_request_validator.validate(utils.spec, FlaskOpenAPIRequest(request))
         if result.errors:
             print(f"openapi_core validation failed. errors: {result.errors}")
@@ -143,10 +153,12 @@ class ClientResource(Resource):
         client.callback_url = new_callback_url
         client.display_name = new_display_name
         db.session.commit()
+        logger.debug(f"client updated; client: {client}")
         return utils.ok(result=client.serialize, msg="Client updated successfully")
 
     def delete(self, client_id):
-        client = Client.query.filter_by(tenant_id=g.tenant_id, client_id=client_id).first()
+        logger.debug("top of DELETE /clients/{client_id}")
+        client = Client.query.filter_by(tenant_id=g.request_tenant_id, client_id=client_id).first()
         if not client:
             raise errors.ResourceError(msg=f'No client found with id {client_id}.')
         if not client.username == g.username:
@@ -193,7 +205,7 @@ class ProfilesResource(Resource):
 
 class UserInfoResource(Resource):
     def get(self):
-        logger.debug(f'top of GET /userinfo')
+        logger.debug(f'top of GET /v3/oauth2/userinfo')
         tenant_id = g.request_tenant_id
         # note that the user info endpoint is more limited for custom oauth idp extensions in general because the
         # custom OAuth server may not provider a profile endpoint.
@@ -208,7 +220,7 @@ class UserInfoResource(Resource):
 
 class ProfileResource(Resource):
     def get(self, username):
-        logger.debug(f'top of GET /profiles/{username}')
+        logger.debug(f'top of GET /v3/profiles/{username}')
         tenant_id = g.request_tenant_id
         # note that the user info endpoint is more limited for custom oauth idp extensions in general because the
         # custom OAuth server may not provider a profile endpoint.
@@ -228,8 +240,8 @@ class TenantConfigResource(Resource):
     def get(self):
         logger.debug('top of GET /v3/oauth2/admin/config')
         # we always use the request tenant id because this should either be the same as g.tenant_id (in the case of a
-        # user account) or the token was the authenticator's OWN service token, in whcih case we use the x-tapis-tenant
-        # header set in the reqest (authenticator itself can update all tenants).
+        # user account) or the token was the authenticator's OWN service token, in which case we use the x-tapis-tenant
+        # header set in the request (authenticator itself can update all tenants).
         tenant_id = g.request_tenant_id
         config = TenantConfig.query.filter_by(tenant_id=tenant_id).first()
         return utils.ok(result=config.serialize, msg="Tenant config object retrieved successfully.")
@@ -241,9 +253,6 @@ class TenantConfigResource(Resource):
         if not config:
             raise errors.ResourceError(f"Config for tenant {tenant_id} does not exist. Contact system administrators.")
         logger.debug(f"update request for tenant {tenant_id}; config: {config.serialize}")
-        # TODO: for tapipy-1.4.0
-        # validator = RequestValidator(utils.spec)
-        # result = validator.validate(FlaskOpenAPIRequest(request))
         result = openapi_request_validator.validate(utils.spec, FlaskOpenAPIRequest(request))
         if result.errors:
             logger.debug(f"openapi_core validation failed. errors: {result.errors}")
@@ -346,6 +355,56 @@ class TenantConfigResource(Resource):
 
 
 # ---------------------------------
+# OIDC endpoints
+# ---------------------------------
+
+# class OIDCMetadataResource(Resource):
+#     """
+#     Provides the OIDC .well-known endpoint.
+#     """
+#     def get(self):
+#         logger.info("top of GET /v3/oauth2/.well-known/openid-configuration")
+#         tenant_id = g.request_tenant_id
+#         config = tenant_configs_cache.get_config(tenant_id)
+#         allowable_grant_types = json.loads(config.allowable_grant_types)
+#         tenant = t.tenant_cache.get_tenant_config(tenant_id=tenant_id)
+#         base_url = tenant.base_url
+#         json_response = {
+#             'issuer': f'{base_url}/v3/tokens',
+#             'authorization_endpoint': f'{base_url}/v3/oauth2/authorize',
+#             'token_endpoint': f'{base_url}/v3/oauth2/tokens/oidc?oidc=true',
+#             'jwks_uri': f'{base_url}/v3/oauth2/jwks',
+#             'registration_endpoint': f'{base_url}/v3/oauth2/clients',
+#             'grant_types_supported': allowable_grant_types,
+#             'userinfo_endpoint': f'{base_url}/v3/oauth2/userinfo/oidc',
+#         }
+#         return json_response #utils.ok(result=metadata, msg='OAuth OIDC metadata retrieved successfully.')
+
+
+class OIDCjwksResource(Resource):
+    """
+    Provides the OIDC jwks endpoint.
+    """
+    def get(self):
+        logger.info("top of GET /v3/oauth2/jwks")
+        tenant_id = g.request_tenant_id
+        config = tenant_configs_cache.get_config(tenant_id)
+        allowable_grant_types = json.loads(config.allowable_grant_types)
+        tenant = t.tenant_cache.get_tenant_config(tenant_id=tenant_id)
+        base_url = tenant.base_url
+        
+        # unpack jwks info from tenant public key
+        pem_key = tenant.public_key
+        key = jwk.JWK.from_pem(pem_key.encode('utf-8'))
+        jwk_json = key.export(as_dict=True)
+
+        json_response = {
+            'keys': [jwk_json]
+        }
+        return json_response #utils.ok(result=metadata, msg='OAuth OIDC metadata retrieved successfully.')
+
+
+# ---------------------------------
 # Authorization Server controllers
 # ---------------------------------
 
@@ -356,7 +415,7 @@ def check_client(use_session=False):
     and returns the associated objects.
 
     If use_session is True, this function will check for the client credentials out of the session. This is
-    used when the tenant is configured with a 3rd-party OAuth2 sever that does not pass back the original
+    used when the tenant is configured with a 3rd-party OAuth2 server that does not pass back the original
     client credentials.
     """
     # tenant_id should be determined by the request URL -
@@ -417,6 +476,8 @@ def check_client(use_session=False):
         raise errors.ResourceError("Required query parameter redirect_uri missing.")
     if not client.callback_url == client_redirect_uri:
         logout()
+        # cgarcia - I'm not sure if the uris should be exact or if only domain should match. But I'll leave this as is.
+        logger.debug(f"redirect_uri query parameter does not match registered callback_url for the client. redirect_uri: {client_redirect_uri}; callback_url: {client.callback_url}")
         raise errors.ResourceError(
             "redirect_uri query parameter does not match the registered callback_url for the client.")
     return client_id, client_redirect_uri, client_state, client, response_type
@@ -595,6 +656,11 @@ class LoginResource(Resource):
             redirect_url = 'mfaresource'
             session['mfa_validated'] = False
             session['mfa_required'] = True
+            sms_required = check_sms(tenant_id, username)
+            if sms_required:
+                logger.debug(f"SMS required for: {username}")
+                sent = send_sms(tenant_id, username)
+                logger.debug(f"SMS Sent: {sent}")
         if session.get('device_login'):
             response_type = 'device_code'
             if not mfa_required:
@@ -605,6 +671,7 @@ class LoginResource(Resource):
                                 state=client_state,
                                 client_display_name=client_display_name,
                                 response_type=response_type))
+
 
 class MFAResource(Resource):
     def get(self):
@@ -634,6 +701,7 @@ class MFAResource(Resource):
                    'client_redirect_uri': client_redirect_uri,
                    'client_state': client_state,
                    'tenant_id': tenant_id,
+                   'mfa_token_name': self.create_token(),
                    'username': session.get('username'),
                    'user_code': request.args.get('user_code', None),
                    'source': request.args.get('source', None)}
@@ -651,7 +719,8 @@ class MFAResource(Resource):
             logger.debug(
                 f"did not find tenant_id in session; issuing redirect to LoginResource. session: {session}")
             return redirect(url_for('loginresource'), 200, headers)
-        mfa_token = request.form.get('mfa_token')
+        mfa_token_name = request.form.get('mfa_token_name')
+        mfa_token = request.form.get(mfa_token_name)
         source = request.form.get('source', None)
         user_code = request.form.get('user_code', None)
 
@@ -686,9 +755,17 @@ class MFAResource(Resource):
                                     source=source))
         else:
             context = {'error': response,
-                   'username': session.get('username')}
+                       'username': session.get('username'),
+                       'mfa_token_name': self.create_token()}
             return make_response(render_template('mfa.html', **context), 200, headers)
 
+    def create_token(self):
+        """
+        Create unique token field name (to prevet autofill of old tokens)
+        """
+        mfa_token_ident = str(random.random())[3:]
+
+        return 'mfa_token_' + mfa_token_ident
 
 class DeviceFlowResource(Resource):
     """
@@ -777,8 +854,8 @@ class DeviceFlowResource(Resource):
             context = {'error': response,
                    'username': session.get('username')}
             return make_response(render_template('device-code.html', **context), 200, headers)
-        
-        
+
+
 class DeviceCodeResource(Resource):
     """
     POST request for creating a device code
@@ -791,9 +868,6 @@ class DeviceCodeResource(Resource):
         logger.debug("In device code resource")
         # support content-type www-form by setting the body on the request eqaul to the JSON
 
-        # TODO: tapipy-1.4.0        
-        # validator = RequestValidator(utils.spec)        
-        # result = validator.validate(FlaskOpenAPIRequest(request))
         result = openapi_request_validator.validate(utils.spec, FlaskOpenAPIRequest(request))
         if result.errors:
             raise errors.ResourceError(msg=f'Invalid POST data: {result.errors}.')
@@ -811,7 +885,7 @@ class DeviceCodeResource(Resource):
         device_code_base_url = request.base_url.split("/v3/oauth2")[0]
         if not 'localhost' in device_code_base_url:
             device_code_base_url = device_code_base_url.replace('http://', 'https://')
-        
+
         device_code = DeviceCode(tenant_id=tenant_id,
                                  username=None,
                                  client_id=client_id,
@@ -847,11 +921,11 @@ class AuthorizeResource(Resource):
     """
 
     def get(self):
-        logger.info("top of GET /oauth2/authorize")
+        logger.info("top of GET /v3/oauth2/authorize")
         is_device_flow = True if 'device_login' in session else False
         # if we are using the multi_idp custom oa2 extension type it is possible we are being redirected here, not by the 
         # original web client, but by our select_idp page, in which case we need to get the client out of the session.
-        
+
         # Update: 10/23/2023 JFS: the idp_id could be in the session but the client_id could not be. This would happen
         # if the following steps were taken:
         #    1) user logs in with client 1. the idp_id gets set in the session here.
@@ -980,7 +1054,7 @@ class AuthorizeResource(Resource):
         return make_response(render_template('authorize.html', **context), 200, headers)
 
     def post(self):
-        logger.debug("top of POST /oauth2/authorize")
+        logger.info("top of POST /v3/oauth2/authorize")
         # selecting a tenant id is required before logging in -
         tenant_id = g.request_tenant_id
         if not tenant_id:
@@ -1190,7 +1264,7 @@ class OAuth2ProviderExtCallback(Resource):
       GET /v3/oauth2/extensions/oa2/callback -- receive the authorization code and exchange it for a token.
     """
     def get(self):
-        logger.debug("top of GET /oauth2/extensions/oa2/callback")
+        logger.info("top of GET /v3/oauth2/extensions/oa2/callback")
         # use tenant id to create the tenant oa2 extension config
         tenant_id = g.request_tenant_id
         session['tenant_id'] = tenant_id
@@ -1239,7 +1313,7 @@ class OAuth2ProviderExtCallback(Resource):
                                 response_type='code'))
 
 
-class TokensResource(Resource):
+def _handle_tokens_request(request, oidc=False):
     """
     Implements the oauth2/tokens endpoint for generating tokens for the following grant types:
       * password
@@ -1247,17 +1321,13 @@ class TokensResource(Resource):
       * refresh_token
       * device_code
     """
-
-    def post(self):
-        logger.debug("top of POST /oauth2/tokens")
+    if oidc or not oidc:
+        logger.info("top of POST /v3/oauth2/tokens")
         # support content-type www-form by setting the body on the request equal to the JSON        
         if request.content_type.startswith('application/x-www-form-urlencoded'):
             logger.debug(f"handling x-www-form data")
             validated_body = TokenRequestBody(form=request.form)
         else:
-            # TODO: tapipy-1.4.0
-            # validator = RequestValidator(utils.spec)        
-            # result = validator.validate(FlaskOpenAPIRequest(request))
             result = openapi_request_validator.validate(utils.spec, FlaskOpenAPIRequest(request))
             if result.errors:
                 raise errors.ResourceError(msg=f'Invalid POST data: {result.errors}.')
@@ -1293,8 +1363,9 @@ class TokensResource(Resource):
         # client id and client key are optional on the password grant type to allow new users to generate tokens
         # right away before they create a client
         if not auth:
-            client_id = None
-            client_key = None
+            # kprice 1/27/2025 optionally can include client credentials in post body
+            client_id = data.get('client_id')
+            client_key = data.get('client_key')
         else:
             try:
                 client_id = auth.username
@@ -1438,6 +1509,12 @@ class TokensResource(Resource):
         }
         if idp_id:
             content['claims']['tapis/idp_id'] = idp_id
+        if oidc:
+            if client_id:
+                content['claims']['aud'] = client_id
+            content['claims']['iat'] = int(time.time())
+            content['claims']['extravar'] = username
+            content['claims']['email'] = username
 
         # only generate a refresh token when OAuth client is passed
         if client_id and client_key:
@@ -1472,6 +1549,7 @@ class TokensResource(Resource):
             raise errors.ResourceError("Failure to generate an access token; please try again later.")
         try:
             result = {'access_token': {'access_token': tokens.access_token.access_token,
+                                       'id_token': tokens.access_token.access_token,
                                        'expires_at': tokens.access_token.expires_at,
                                        'expires_in': tokens.access_token.expires_in,
                                        'jti': tokens.access_token.jti
@@ -1542,8 +1620,29 @@ class TokensResource(Resource):
                   f"Contact system administrator. (Debug data: {e})"
             logger.error(msg)
             raise errors.ResourceError(f"{msg}")
-        
+
+        if oidc:
+            logger.info("Token endpoint with OIDC flag set.")
+            response_json = {
+                'access_token': result['access_token']['access_token'],
+                'expires_in': result['access_token']['expires_in'],
+                'token_type': 'Bearer',
+                'id_token': result['access_token']['id_token']}
+            logger.info(f"OIDC response: {response_json}")
+            # oidc endpoints aren't expecting our tapis 5 stanza response.
+            return jsonify(response_json)
+
         return utils.ok(result=result, msg="Token created successfully.")
+
+
+class TokensResource(Resource):
+    def post(self):
+        return _handle_tokens_request(request, oidc=False)
+
+
+class OIDCTokensResource(Resource):
+    def post(self):
+        return _handle_tokens_request(request, oidc=True)
 
 
 class V2TokenResource(Resource):
@@ -1605,9 +1704,6 @@ class RevokeTokensResource(Resource):
     """
     def post(self):
         logger.debug("top of POST /v3/oauth2/tokens/revoke")
-        # TODO: tapipy-1.4.0
-        # validator = RequestValidator(utils.spec)
-        # validated = validator.validate(FlaskOpenAPIRequest(request))
         validated = openapi_request_validator.validate(utils.spec, FlaskOpenAPIRequest(request))
         if validated.errors:
             raise errors.ResourceError(msg=f'Invalid POST data: {validated.errors}.')

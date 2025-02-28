@@ -724,15 +724,24 @@ class LdapUser(object):
         attrs = {}
         try:
             cn = entry['cn'][0]
-        except Exception as e:
+        except Exception:
             logger.error(f"Got exception trying to get cn from entry; entry: {entry}")
             raise DAOError("Unable to parse LDAP user objects.")
-        # the cn is the uid/username
-        attrs['uid'] = cn
+        # the cn is supposed to be the uid/username
+        # however, some tenants have cn configured incorrectly
+        # we can look for uid instead
+        if 'uid' in entry:
+            logger.debug(f"Found uid in entry: {entry['uid']}")
+            attrs['uid'] = entry['uid'][0]
+        else:
+            attrs['uid'] = cn
         # compute the DN from the CN
         tenant = tenants.get_tenant_config(tenant_id)
         ldap_user_dn = tenant.ldap_user_dn
-        attrs['dn'] = f'cn={cn},{ldap_user_dn}'
+        if "${username}" in ldap_user_dn:
+            attrs['dn'] = ldap_user_dn.replace("${username}", attrs['uid'])
+        else:
+            attrs['dn'] = f'cn={cn},{ldap_user_dn}'
         # the remaining params are computed directly in the same way -- as the first entry in an array of bytes
         params = ['givenName', 'sn', 'mail', 'telephoneNumber', 'mobile', 'createTimestamp',
                   'uidNumber', 'userPassword']
@@ -904,6 +913,7 @@ class Token(object):
         result['code'] = getattr(data, 'code', None)
         # device code grant:
         result['client_id'] = getattr(data, 'client_id', None)
+        result['client_key'] = getattr(data, 'client_key', None)
         result['device_code'] = getattr(data, 'device_code', None)
         # refresh token:
         result['refresh_token'] = getattr(data, 'refresh_token', None)

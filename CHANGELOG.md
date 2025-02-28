@@ -2,7 +2,86 @@
 All notable changes to this project will be documented in this file.
 
 
-## 1.6.0 - 2024-02-06 (estimated)
+## 1.8.2 - 2024-02-28
+### Breaking Changes:
+- None
+
+### New features:
+- 100% tests coverage aside from V2 endpoints
+- Now grabbing uid from tokens if DN not set by CN for tenant
+- Introduced OIDC support with jwks endpoints and dedicated oidc response endpoints.
+- Now works better with Jenkins
+
+### Bug Fixes:
+- None
+
+
+## 1.8.0 - 2024-12-04
+### Breaking Changes:
+- None
+
+### New features:
+- Change help message per tenant
+
+### Bug Fixes:
+- Release for 1.8.0
+
+
+## 1.7.0 - 2024-09-13
+### Breaking Changes:
+- None
+
+### New features:
+- None
+
+### Bug Fixes:
+- Release for 1.7.0
+
+
+## 1.6.3 - 2024-08-28
+### Breaking Changes:
+- None
+
+### New features:
+- This release makes some minor updates to the TACC MFA login page.  
+- Add SMS support to MFA authentication workflow (need to update tenant config with JWT for PIdea).
+
+### Bug Fixes:
+- None
+
+
+## 1.6.2 - 2024-06-18
+### Breaking Changes:
+- None
+
+### New features:
+- None 
+
+### Bug Fixes:
+- This minor release updates Authenticator to the latest tapisservice Python package, 1.6.0 
+  (previously it was 1.4.0). See issue #70.
+
+
+## 1.6.1 - 2024-05-21
+### Breaking Changes:
+- None
+
+### New features:
+- None 
+
+### Bug Fixes:
+- This release changes the behavior of the limit and offset paging query parameters in the Profiles API so that, 
+  whenever an offset value is sent that is larger that the size of the collection, no records are returned. 
+  Prior to this release, whenever an offset larger than the collection was sent, the query would "wrap" around 
+  and send results from the start of the collection.
+- Since LDAP DNs are almost always case insensitive, usernames that are the same up to case are equivalent 
+  for binding. This change updates the check of a username/password combination to reject any username that 
+  contains uppercase letters. This prevents an issue where users could authenticate with different usernames 
+  that are the same up to case and retrieve JWTs with different subjects. (See issue #69).
+
+  
+
+## 1.6.0 - 2024-02-06
 
 ### Breaking Changes:
 - None

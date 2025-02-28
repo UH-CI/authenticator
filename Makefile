@@ -7,9 +7,8 @@
 
 
 # it is required that the operator export API_NAME=<name_of_the_api> before using this makefile/
-ifndef API_NAME
--include .env
-endif
+# default to authenticator
+API_NAME ?=authenticator
 api=${API_NAME}
 
 cwd=$(shell pwd)
@@ -30,7 +29,7 @@ build: build.api build.migrations build.test
 
 # ----- run tests
 test: build.test
-	cd $(cwd); touch service.log; chmod a+w service.log; docker-compose run $(api)-tests;
+	cd $(cwd); touch service.log; chmod a+w service.log; docker-compose run -e MFA_GEN_CODE=$(MFA_GEN_CODE) $(api)-tests;
 
 # ----- shutdown the currently running services
 down:
@@ -42,7 +41,7 @@ clean: down
 
 # ----- start databases
 run_dbs: build.api down
-	cd $(cwd); docker-compose up -d postgres; docker-compose up -d authenticator-ldap
+	cd $(cwd); docker-compose --compatibility up -d postgres; docker-compose up -d authenticator-ldap
 
 # ----- connect to db as root
 connect_db:
