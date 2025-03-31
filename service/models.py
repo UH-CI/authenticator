@@ -870,6 +870,8 @@ class TokenRequestBody(object):
         self.redirect_uri = form.get('redirect_uri')
         self.code = form.get('code')
         self.refresh_token = form.get('refresh_token')
+        self.client_id = form.get('client_id')
+        self.client_key = form.get('client_key') or form.get('client_secret')
 
 
 class Token(object):
@@ -913,7 +915,7 @@ class Token(object):
         result['code'] = getattr(data, 'code', None)
         # device code grant:
         result['client_id'] = getattr(data, 'client_id', None)
-        result['client_key'] = getattr(data, 'client_key', None)
+        result['client_key'] = getattr(data, 'client_key', None) or getattr(data, 'client_secret', None)
         result['device_code'] = getattr(data, 'device_code', None)
         # refresh token:
         result['refresh_token'] = getattr(data, 'refresh_token', None)
