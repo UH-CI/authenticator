@@ -397,11 +397,18 @@ class OIDCjwksResource(Resource):
         pem_key = tenant.public_key
         key = jwk.JWK.from_pem(pem_key.encode('utf-8'))
         jwk_json = key.export(as_dict=True)
+        # check for required values:
+        if 'alg' not in jwk_json.keys():
+            jwk_json['alg'] = 'RS256'
+        if 'typ' not in jwk_json.keys():
+            jwk_json['typ'] = 'JWT'
+        # NOTE 2025.3.28 kprice -- these values can be hard coded since they are also hard coded in tokens. If these values ever change in tokens we'll need to update this block.
 
         json_response = {
             'keys': [jwk_json]
         }
-        return json_response #utils.ok(result=metadata, msg='OAuth OIDC metadata retrieved successfully.')
+        logger.debug(f'Got JWKS keys: {json.dumps(json_response, indent=4)}')
+        return jsonify(json_response) #utils.ok(result=metadata, msg='OAuth OIDC metadata retrieved successfully.')
 
 
 # ---------------------------------
@@ -1405,6 +1412,7 @@ def _handle_tokens_request(request, oidc=False):
             client = Client.query.filter_by(tenant_id=tenant_id, client_id=client_id, client_key=client_key).first()
             if not client:
                 # todo -- remove session
+                logger.debug(f'Client with id {client_id} and key {client_key} not found on tenant {tenant_id}.')
                 raise errors.ResourceError(msg=f'Invalid client credentials: {client_id}, {client_key}. '
                                                f'session: {session}')
 
