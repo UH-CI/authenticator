@@ -407,7 +407,6 @@ class OIDCjwksResource(Resource):
         json_response = {
             'keys': [jwk_json]
         }
-        logger.debug(f'Got JWKS keys: {json.dumps(json_response, indent=4)}')
         return jsonify(json_response) #utils.ok(result=metadata, msg='OAuth OIDC metadata retrieved successfully.')
 
 
@@ -466,7 +465,6 @@ def check_client(use_session=False):
         logout()
         raise errors.ResourceError("Required query parameter client_id missing.")
     # make sure the client exists and the redirect_uri matches
-    logger.debug(f"checking for client with id: {client_id} in tenant {tenant_id}")
     client = Client.query.filter_by(tenant_id=tenant_id, client_id=client_id).first()
     if not client:
         logout()
