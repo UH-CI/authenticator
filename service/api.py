@@ -79,6 +79,7 @@ api.add_resource(ProfileResource, '/v3/oauth2/profiles/<username>')
 #api.add_resource(OIDCMetadataResource, '/v3/oauth2/.well-known/openid-configuration')
 api.add_resource(OIDCjwksResource, '/v3/oauth2/jwks')
 api.add_resource(OIDCTokensResource, '/v3/oauth2/tokens/oidc')
+api.add_resource(OIDCUserInfoResource, '/v3/oauth2/userinfo/oidc')
 
 # Auth server resources
 api.add_resource(AuthorizeResource, '/v3/oauth2/authorize')

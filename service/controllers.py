@@ -203,19 +203,55 @@ class ProfilesResource(Resource):
         return resp
 
 
+def _handle_userinfo_request(request, oidc=False):
+    if oidc:
+        logger.debug(f'top of GET /v3/oauth2/userinfo/oidc')
+    else:
+        logger.debug(f'top of GET /v3/oauth2/userinfo')
+    tenant_id = g.request_tenant_id
+    # note that the user info endpoint is more limited for custom oauth idp extensions in general because the
+    # custom OAuth server may not provide a profile endpoint.
+    custom_oa2_extension_type = tenant_configs_cache.get_custom_oa2_extension_type(tenant_id=tenant_id)
+
+    ## token should maybe already have:
+    # jti iss sub exp tapis/tenant_id tapis/token_type
+    # tapis/delegation tapis/delegation_sub tapis/username
+    # tapis/account_type tapis/client_id tapis/grant_type
+
+    if custom_oa2_extension_type and not custom_oa2_extension_type == 'ldap':
+        result = {"username": g.username}
+        return utils.ok(result=result, msg="User profile retrieved successfully.")
+
+    userinfo = get_tenant_user(tenant_id=tenant_id, username=g.username)
+
+    ## Rubin Science place needs
+    # rubin scope with info via data_rights
+    # adding data rights for specific users for rubin - test
+    logger.debug(f"userinfo: {userinfo}")
+    if oidc and hasattr(userinfo, 'username'):
+        if userinfo.username in ["cgarcia", "mpackard", "kprice", "jstubbs"]:
+            data_rights = get_user_data_rights(user)
+            if data_rights:
+                userinfo["data_rights"] = " ".join(data_rights)
+
+    return utils.ok(result=userinfo.serialize, msg="User profile retrieved successfully.")
+
+
+def get_user_data_rights(user):
+    # Implement logic to retrieve the list of data releases the user has access to
+    # This function should return a list of strings representing data releases
+    return ["release1", "release2", "lsst-sqre", "admin:jupyterlab", "admin", "jupyterlab", "square", "tacc-spherex"]
+
+
 class UserInfoResource(Resource):
     def get(self):
-        logger.debug(f'top of GET /v3/oauth2/userinfo')
-        tenant_id = g.request_tenant_id
-        # note that the user info endpoint is more limited for custom oauth idp extensions in general because the
-        # custom OAuth server may not provider a profile endpoint.
-        custom_oa2_extension_type = tenant_configs_cache.get_custom_oa2_extension_type(tenant_id=tenant_id)
-        if custom_oa2_extension_type and not custom_oa2_extension_type == 'ldap':
-            result = {"username": g.username}
-            return utils.ok(result=result, msg="User profile retrieved successfully.")
+        return _handle_userinfo_request(request, oidc=False)
 
-        user = get_tenant_user(tenant_id=tenant_id, username=g.username)
-        return utils.ok(result=user.serialize, msg="User profile retrieved successfully.")
+
+class OIDCUserInfoResource(Resource):
+    def get(self):
+        return _handle_userinfo_request(request, oidc=True)
+
 
 
 class ProfileResource(Resource):
