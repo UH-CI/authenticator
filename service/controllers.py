@@ -229,7 +229,7 @@ def _handle_userinfo_request(request, oidc=False):
     # adding data rights for specific users for rubin - test
     logger.debug(f"userinfo: {userinfo}")
     username = userinfo.get('username')
-    if oidc and username in ["cgarcia", "mpackard", "kprice", "jstubbs"]:
+    if oidc and username and username in ["cgarcia", "mpackard", "kprice", "jstubbs"]:
         data_rights = get_user_data_rights(username)
         if data_rights:
             userinfo["data_rights"] = " ".join(data_rights)
