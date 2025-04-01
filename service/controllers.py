@@ -228,11 +228,11 @@ def _handle_userinfo_request(request, oidc=False):
     # rubin scope with info via data_rights
     # adding data rights for specific users for rubin - test
     logger.debug(f"userinfo: {userinfo}")
-    if oidc and hasattr(userinfo, 'username'):
-        if userinfo.username in ["cgarcia", "mpackard", "kprice", "jstubbs"]:
-            data_rights = get_user_data_rights(user)
-            if data_rights:
-                userinfo["data_rights"] = " ".join(data_rights)
+    username = userinfo.get('username')
+    if oidc and username in ["cgarcia", "mpackard", "kprice", "jstubbs"]:
+        data_rights = get_user_data_rights(username)
+        if data_rights:
+            userinfo["data_rights"] = " ".join(data_rights)
 
     return utils.ok(result=userinfo.serialize, msg="User profile retrieved successfully.")
 
