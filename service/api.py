@@ -9,7 +9,7 @@ from service.controllers import AuthorizeResource, ClientsResource, ClientResour
     ProfilesResource, ProfileResource, StaticFilesResource, LoginResource, SetTenantResource, LogoutResource, \
     WebappTokenGen, WebappTokenAndRedirect, TenantConfigResource, UserInfoResource, OAuth2ProviderExtCallback, \
     OAuthMetadataResource, MFAResource, DeviceFlowResource, DeviceCodeResource, V2TokenResource, \
-    RevokeTokensResource, SetIdentityProvider, WebappLogout, OIDCjwksResource, OIDCTokensResource#, OIDCUserInfoResource, OIDCMetadataResource
+    RevokeTokensResource, SetIdentityProvider, WebappLogout, OIDCjwksResource, OIDCTokensResource, OIDCUserInfoResource #, OIDCMetadataResource
 from service.ldap import populate_test_ldap
 from service.models import db, app, initialize_tenant_configs
 
