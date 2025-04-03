@@ -227,17 +227,25 @@ def _handle_userinfo_request(request, oidc=False):
     ## Rubin Science place needs
     # rubin scope with info via data_rights
     # adding data rights for specific users for rubin - test
-    logger.debug(f"userinfo: {userinfo}")
-    username = userinfo.get('username')
-    if oidc and username and username in ["cgarcia", "mpackard", "kprice", "jstubbs"]:
-        data_rights = get_user_data_rights(username)
-        if data_rights:
-            userinfo["data_rights"] = " ".join(data_rights)
+    logger.debug(f"userinfo: {userinfo.serialize}")
+    try:
+        username = userinfo.get('username')
+    except:
+        username = "TALKTODEV"
+    if oidc:
+        logger.debug(f"inside of oidc userinfo; username: {username}")
+        ## This code still doesn't matter, was attempting some debugging for rubin place
+        # Kevin got Gafaelfawr to look in the "correct field" to map groups
+        if username and username in ["cgarcia", "mpackard", "kprice", "jstubbs"]:
+            data_rights = get_user_data_rights(username)
+            if data_rights:
+                userinfo["data_rights"] = " ".join(data_rights)
+        return jsonify(userinfo.serialize)
 
     return utils.ok(result=userinfo.serialize, msg="User profile retrieved successfully.")
 
 
-def get_user_data_rights(user):
+def get_user_data_rights(username):
     # Implement logic to retrieve the list of data releases the user has access to
     # This function should return a list of strings representing data releases
     return ["release1", "release2", "lsst-sqre", "admin:jupyterlab", "admin", "jupyterlab", "square", "tacc-spherex"]
@@ -1553,6 +1561,7 @@ def _handle_tokens_request(request, oidc=False):
             content['claims']['tapis/idp_id'] = idp_id
         if oidc:
             if client_id:
+                # bookstack for example requires aud to match client id
                 content['claims']['aud'] = client_id
             content['claims']['iat'] = int(time.time())
             content['claims']['extravar'] = username

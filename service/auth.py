@@ -148,6 +148,48 @@ def authentication():
                                                 f"served by this authenticator.")
         return True
 
+    # token should come from `Authorization: Bearer $token` header. rather than x-tapis-token
+    # this endpoint takes both, converts Authorization to x-tapis-token for simplicity
+    if '/v3/oauth2/userinfo/oidc' in request.url_rule.rule:
+        logger.debug(f"top of /v3/oauth2/userinfo/oidc auth: request.headers: {request.headers}")
+
+        auth_token = request.headers.get('Authorization')
+        if auth_token and auth_token.startswith('Bearer ') and not request.headers.get('X-Tapis-Token'):
+            try:
+                # overwrite the headers via wsgi environ. request.headers itself is read-only
+                tapis_token = auth_token.replace('Bearer ', '')
+                logger.debug(f"found auth header; setting environ X-Tapis-Token to {tapis_token}")
+
+                # tokens might have aud, if jwt.decode in tapisservice doesn't specify expected aud you'll
+                # get invalid aud. Either we can somehow pop aud or specify to jwt.decode(options={'verify_aud': False})
+                # Instead of verify = false we can also specify a list of valid auds. Pop aud would require
+                # re-encoding+sigining key. We don't have private tenant key in auth though. Ignoring for now, only
+                # bookstack looks for this when running their auth.
+                # resolve_tenant_id_for_request decode needs aud to expect - https://github.com/jpadilla/pyjwt/blob/master/docs/usage.rst#audience-claim-aud
+
+                # modify the WSGI environment directly
+                # wsgi requires headers be uppercase, no dashes, and prefixed with HTTP_
+                request.environ['HTTP_X_TAPIS_TOKEN'] = tapis_token
+            except Exception as e:
+                logger.error(f"found auth header, but failed to parse it; exception: {e}")
+
+        # debug logs
+        try:
+            headers = request.headers
+            logger.debug(f"before auth.authentication(). request.headers: {headers}")
+        except Exception as e:
+            pass
+        
+        auth.authentication()
+        # always resolve the request tenant id based on the URL:
+        auth.resolve_tenant_id_for_request()
+        # make sure this request is for a tenant served by this authenticator
+        if g.request_tenant_id not in conf.tenants:
+            raise common_errors.PermissionsError(f"The request is for a tenant ({g.request_tenant_id}) that is not "
+                                                 f"served by this authenticator.")
+        logger.debug(f"End of v3/oauth2/userinfo/oidc auth: final request_tenant_id: {g.request_tenant_id}")
+        return True
+
     # the profiles endpoints always use standard Tapis Token auth -
     if '/v3/oauth2/profiles' in request.url_rule.rule or \
             '/v3/oauth2/userinfo' in request.url_rule.rule:
