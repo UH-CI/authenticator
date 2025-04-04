@@ -159,14 +159,6 @@ def authentication():
                 # overwrite the headers via wsgi environ. request.headers itself is read-only
                 tapis_token = auth_token.replace('Bearer ', '')
                 logger.debug(f"found auth header; setting environ X-Tapis-Token to {tapis_token}")
-
-                # tokens might have aud, if jwt.decode in tapisservice doesn't specify expected aud you'll
-                # get invalid aud. Either we can somehow pop aud or specify to jwt.decode(options={'verify_aud': False})
-                # Instead of verify = false we can also specify a list of valid auds. Pop aud would require
-                # re-encoding+sigining key. We don't have private tenant key in auth though. Ignoring for now, only
-                # bookstack looks for this when running their auth.
-                # resolve_tenant_id_for_request decode needs aud to expect - https://github.com/jpadilla/pyjwt/blob/master/docs/usage.rst#audience-claim-aud
-
                 # modify the WSGI environment directly
                 # wsgi requires headers be uppercase, no dashes, and prefixed with HTTP_
                 request.environ['HTTP_X_TAPIS_TOKEN'] = tapis_token
@@ -176,11 +168,19 @@ def authentication():
         # debug logs
         try:
             headers = request.headers
-            logger.debug(f"before auth.authentication(). request.headers: {headers}")
+            logger.debug(f"before auth.authentication(). request.headers: {headers.keys()}")
         except Exception as e:
             pass
-        
-        auth.authentication()
+
+        # tokens might have aud, if jwt.decode in tapisservice doesn't specify expected aud you'll
+        # get invalid aud. Either we can somehow pop aud or specify to jwt.decode(options={'verify_aud': False})
+        # Instead of verify = false we can also specify a list of valid auds. Pop aud would require
+        # re-encoding+signing key. We don't have private tenant key in auth though. Ignoring for now, only
+        # bookstack looks for this when running their auth.
+        # resolve_tenant_id_for_request decode needs aud to expect - https://github.com/jpadilla/pyjwt/blob/master/docs/usage.rst#audience-claim-aud
+        # Edit, expected_aud now exists. Bookstack asks for aud == client_id. For now we'll just allow any aud, especially as this is one endpoint.
+
+        auth.authentication(expected_aud=["*"])
         # always resolve the request tenant id based on the URL:
         auth.resolve_tenant_id_for_request()
         # make sure this request is for a tenant served by this authenticator

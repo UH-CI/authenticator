@@ -10,6 +10,7 @@ from flask_restful import Resource
 from openapi_core import openapi_request_validator
 from openapi_core.contrib.flask import FlaskOpenAPIRequest
 from jwcrypto import jwk
+import jwt
 import sqlalchemy
 import secrets
 import random
@@ -212,7 +213,6 @@ def _handle_userinfo_request(request, oidc=False):
     # note that the user info endpoint is more limited for custom oauth idp extensions in general because the
     # custom OAuth server may not provide a profile endpoint.
     custom_oa2_extension_type = tenant_configs_cache.get_custom_oa2_extension_type(tenant_id=tenant_id)
-
     ## token should maybe already have:
     # jti iss sub exp tapis/tenant_id tapis/token_type
     # tapis/delegation tapis/delegation_sub tapis/username
@@ -240,7 +240,17 @@ def _handle_userinfo_request(request, oidc=False):
             data_rights = get_user_data_rights(username)
             if data_rights:
                 userinfo["data_rights"] = " ".join(data_rights)
-        return jsonify(userinfo.serialize)
+
+        # return token + userinfo as return for bookstack OIDC userinfo call.
+        # bookstack at leasts needs sub claim.
+        try: 
+            token_dict = jwt.decode(g.x_tapis_token, options={"verify_signature": False})
+            newinfo = userinfo.serialize
+            newinfo.update(token_dict)
+        except Exception as e:
+            logger.debug(f"Error creating userinfo+token object: {e}, token: {g.x_tapis_token}")
+            raise errors.ResourceError("Error with token and userinfo objects.")
+        return jsonify(newinfo)
 
     return utils.ok(result=userinfo.serialize, msg="User profile retrieved successfully.")
 
