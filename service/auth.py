@@ -160,7 +160,7 @@ def authentication():
                 tapis_token = auth_token.replace('Bearer ', '')
                 logger.debug(f"found auth header; setting environ X-Tapis-Token to {tapis_token}")
                 # modify the WSGI environment directly
-                # wsgi requires headers be uppercase, no dashes, and prefixed with HTTP_
+                # wsgi requires headers be uppercase, no dashes, and prefixed with 'HTTP_'
                 request.environ['HTTP_X_TAPIS_TOKEN'] = tapis_token
             except Exception as e:
                 logger.error(f"found auth header, but failed to parse it; exception: {e}")
