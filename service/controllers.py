@@ -205,11 +205,11 @@ class ProfilesResource(Resource):
 
 
 def _handle_userinfo_request(request, oidc=False):
-    if oidc:
-        logger.debug(f'top of GET /v3/oauth2/userinfo/oidc')
-    else:
-        logger.debug(f'top of GET /v3/oauth2/userinfo')
     tenant_id = g.request_tenant_id
+    if oidc:
+        logger.debug(f'top of GET /v3/oauth2/userinfo/oidc - tenant_id: {tenant_id}')
+    else:
+        logger.debug(f'top of GET /v3/oauth2/userinfo - tenant_id: {tenant_id}')
     # note that the user info endpoint is more limited for custom oauth idp extensions in general because the
     # custom OAuth server may not provide a profile endpoint.
     custom_oa2_extension_type = tenant_configs_cache.get_custom_oa2_extension_type(tenant_id=tenant_id)
@@ -219,8 +219,10 @@ def _handle_userinfo_request(request, oidc=False):
     # tapis/account_type tapis/client_id tapis/grant_type
 
     if custom_oa2_extension_type and not custom_oa2_extension_type == 'ldap':
+        logger.debug(f"Using custom auth for userinfo; custom_oa2_extension_type: {custom_oa2_extension_type}")
+        logger.debug(f"g.token_claims - {g.token_claims}")
         result = {"username": g.username}
-        return utils.ok(result=result, msg="User profile retrieved successfully.")
+        return utils.ok(result=result, msg="User profile retrieved successfully - custom auth extension provider")
 
     userinfo = get_tenant_user(tenant_id=tenant_id, username=g.username)
 
@@ -411,29 +413,6 @@ class TenantConfigResource(Resource):
 # ---------------------------------
 # OIDC endpoints
 # ---------------------------------
-
-# class OIDCMetadataResource(Resource):
-#     """
-#     Provides the OIDC .well-known endpoint.
-#     """
-#     def get(self):
-#         logger.info("top of GET /v3/oauth2/.well-known/openid-configuration")
-#         tenant_id = g.request_tenant_id
-#         config = tenant_configs_cache.get_config(tenant_id)
-#         allowable_grant_types = json.loads(config.allowable_grant_types)
-#         tenant = t.tenant_cache.get_tenant_config(tenant_id=tenant_id)
-#         base_url = tenant.base_url
-#         json_response = {
-#             'issuer': f'{base_url}/v3/tokens',
-#             'authorization_endpoint': f'{base_url}/v3/oauth2/authorize',
-#             'token_endpoint': f'{base_url}/v3/oauth2/tokens/oidc?oidc=true',
-#             'jwks_uri': f'{base_url}/v3/oauth2/jwks',
-#             'registration_endpoint': f'{base_url}/v3/oauth2/clients',
-#             'grant_types_supported': allowable_grant_types,
-#             'userinfo_endpoint': f'{base_url}/v3/oauth2/userinfo/oidc',
-#         }
-#         return json_response #utils.ok(result=metadata, msg='OAuth OIDC metadata retrieved successfully.')
-
 
 class OIDCjwksResource(Resource):
     """
