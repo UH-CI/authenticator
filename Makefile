@@ -6,6 +6,14 @@
 #        CONSIDER USING VIM (sigh!) WHICH ACTUALLY HAS GOOD MAKEFILE EDITING SUPPORT.
 
 
+
+# To run tests ensure service_password and token_url in .env
+# make clean
+# make build
+# make init_dbs
+# make migrate.upgrade
+# make test
+
 # it is required that the operator export API_NAME=<name_of_the_api> before using this makefile/
 # default to authenticator
 API_NAME ?=authenticator

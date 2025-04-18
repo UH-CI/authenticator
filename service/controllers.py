@@ -10,6 +10,7 @@ from flask_restful import Resource
 from openapi_core import openapi_request_validator
 from openapi_core.contrib.flask import FlaskOpenAPIRequest
 from jwcrypto import jwk
+import jwt
 import sqlalchemy
 import secrets
 import random
@@ -203,19 +204,74 @@ class ProfilesResource(Resource):
         return resp
 
 
+def _handle_userinfo_request(request, oidc=False):
+    tenant_id = g.request_tenant_id
+    if oidc:
+        logger.debug(f'top of GET /v3/oauth2/userinfo/oidc - tenant_id: {tenant_id}')
+    else:
+        logger.debug(f'top of GET /v3/oauth2/userinfo - tenant_id: {tenant_id}')
+    # note that the user info endpoint is more limited for custom oauth idp extensions in general because the
+    # custom OAuth server may not provide a profile endpoint.
+    custom_oa2_extension_type = tenant_configs_cache.get_custom_oa2_extension_type(tenant_id=tenant_id)
+    ## token should maybe already have:
+    # jti iss sub exp tapis/tenant_id tapis/token_type
+    # tapis/delegation tapis/delegation_sub tapis/username
+    # tapis/account_type tapis/client_id tapis/grant_type
+
+    if custom_oa2_extension_type and not custom_oa2_extension_type == 'ldap':
+        logger.debug(f"Using custom auth for userinfo; custom_oa2_extension_type: {custom_oa2_extension_type}")
+        logger.debug(f"g.token_claims - {g.token_claims}")
+        result = {"username": g.username}
+        return utils.ok(result=result, msg="User profile retrieved successfully - custom auth extension provider")
+
+    userinfo = get_tenant_user(tenant_id=tenant_id, username=g.username)
+
+    ## Rubin Science place needs
+    # rubin scope with info via data_rights
+    # adding data rights for specific users for rubin - test
+    logger.debug(f"userinfo: {userinfo.serialize}")
+    try:
+        username = userinfo.get('username')
+    except:
+        username = "TALKTODEV"
+    if oidc:
+        logger.debug(f"inside of oidc userinfo; username: {username}")
+        ## This code still doesn't matter, was attempting some debugging for rubin place
+        # Kevin got Gafaelfawr to look in the "correct field" to map groups
+        if username and username in ["cgarcia", "mpackard", "kprice", "jstubbs"]:
+            data_rights = get_user_data_rights(username)
+            if data_rights:
+                userinfo["data_rights"] = " ".join(data_rights)
+
+        # return token + userinfo as return for bookstack OIDC userinfo call.
+        # bookstack at leasts needs sub claim.
+        try: 
+            token_dict = jwt.decode(g.x_tapis_token, options={"verify_signature": False})
+            newinfo = userinfo.serialize
+            newinfo.update(token_dict)
+        except Exception as e:
+            logger.debug(f"Error creating userinfo+token object: {e}, token: {g.x_tapis_token}")
+            raise errors.ResourceError("Error with token and userinfo objects.")
+        return jsonify(newinfo)
+
+    return utils.ok(result=userinfo.serialize, msg="User profile retrieved successfully.")
+
+
+def get_user_data_rights(username):
+    # Implement logic to retrieve the list of data releases the user has access to
+    # This function should return a list of strings representing data releases
+    return ["release1", "release2", "lsst-sqre", "admin:jupyterlab", "admin", "jupyterlab", "square", "tacc-spherex"]
+
+
 class UserInfoResource(Resource):
     def get(self):
-        logger.debug(f'top of GET /v3/oauth2/userinfo')
-        tenant_id = g.request_tenant_id
-        # note that the user info endpoint is more limited for custom oauth idp extensions in general because the
-        # custom OAuth server may not provider a profile endpoint.
-        custom_oa2_extension_type = tenant_configs_cache.get_custom_oa2_extension_type(tenant_id=tenant_id)
-        if custom_oa2_extension_type and not custom_oa2_extension_type == 'ldap':
-            result = {"username": g.username}
-            return utils.ok(result=result, msg="User profile retrieved successfully.")
+        return _handle_userinfo_request(request, oidc=False)
 
-        user = get_tenant_user(tenant_id=tenant_id, username=g.username)
-        return utils.ok(result=user.serialize, msg="User profile retrieved successfully.")
+
+class OIDCUserInfoResource(Resource):
+    def get(self):
+        return _handle_userinfo_request(request, oidc=True)
+
 
 
 class ProfileResource(Resource):
@@ -358,29 +414,6 @@ class TenantConfigResource(Resource):
 # OIDC endpoints
 # ---------------------------------
 
-# class OIDCMetadataResource(Resource):
-#     """
-#     Provides the OIDC .well-known endpoint.
-#     """
-#     def get(self):
-#         logger.info("top of GET /v3/oauth2/.well-known/openid-configuration")
-#         tenant_id = g.request_tenant_id
-#         config = tenant_configs_cache.get_config(tenant_id)
-#         allowable_grant_types = json.loads(config.allowable_grant_types)
-#         tenant = t.tenant_cache.get_tenant_config(tenant_id=tenant_id)
-#         base_url = tenant.base_url
-#         json_response = {
-#             'issuer': f'{base_url}/v3/tokens',
-#             'authorization_endpoint': f'{base_url}/v3/oauth2/authorize',
-#             'token_endpoint': f'{base_url}/v3/oauth2/tokens/oidc?oidc=true',
-#             'jwks_uri': f'{base_url}/v3/oauth2/jwks',
-#             'registration_endpoint': f'{base_url}/v3/oauth2/clients',
-#             'grant_types_supported': allowable_grant_types,
-#             'userinfo_endpoint': f'{base_url}/v3/oauth2/userinfo/oidc',
-#         }
-#         return json_response #utils.ok(result=metadata, msg='OAuth OIDC metadata retrieved successfully.')
-
-
 class OIDCjwksResource(Resource):
     """
     Provides the OIDC jwks endpoint.
@@ -397,11 +430,17 @@ class OIDCjwksResource(Resource):
         pem_key = tenant.public_key
         key = jwk.JWK.from_pem(pem_key.encode('utf-8'))
         jwk_json = key.export(as_dict=True)
+        # check for required values:
+        if 'alg' not in jwk_json.keys():
+            jwk_json['alg'] = 'RS256'
+        if 'typ' not in jwk_json.keys():
+            jwk_json['typ'] = 'JWT'
+        # NOTE 2025.3.28 kprice -- these values can be hard coded since they are also hard coded in tokens. If these values ever change in tokens we'll need to update this block.
 
         json_response = {
             'keys': [jwk_json]
         }
-        return json_response #utils.ok(result=metadata, msg='OAuth OIDC metadata retrieved successfully.')
+        return jsonify(json_response) #utils.ok(result=metadata, msg='OAuth OIDC metadata retrieved successfully.')
 
 
 # ---------------------------------
@@ -459,7 +498,6 @@ def check_client(use_session=False):
         logout()
         raise errors.ResourceError("Required query parameter client_id missing.")
     # make sure the client exists and the redirect_uri matches
-    logger.debug(f"checking for client with id: {client_id} in tenant {tenant_id}")
     client = Client.query.filter_by(tenant_id=tenant_id, client_id=client_id).first()
     if not client:
         logout()
@@ -1405,6 +1443,7 @@ def _handle_tokens_request(request, oidc=False):
             client = Client.query.filter_by(tenant_id=tenant_id, client_id=client_id, client_key=client_key).first()
             if not client:
                 # todo -- remove session
+                logger.debug(f'Client with id {client_id} and key {client_key} not found on tenant {tenant_id}.')
                 raise errors.ResourceError(msg=f'Invalid client credentials: {client_id}, {client_key}. '
                                                f'session: {session}')
 
@@ -1511,6 +1550,7 @@ def _handle_tokens_request(request, oidc=False):
             content['claims']['tapis/idp_id'] = idp_id
         if oidc:
             if client_id:
+                # bookstack for example requires aud to match client id
                 content['claims']['aud'] = client_id
             content['claims']['iat'] = int(time.time())
             content['claims']['extravar'] = username
