@@ -29,16 +29,15 @@ def get_ldap_connection(ldap_server, ldap_port, bind_dn, bind_password, use_ssl=
     """
     logger.debug(f"Attempting LDAP connection with: server='{ldap_server}', port='{ldap_port}', bind_dn='{bind_dn}', use_ssl='{use_ssl}'")
     tls_config = None
-    if use_ssl:
-        validate_cert_conf = conf.ldap_validate_cert
-        ssl_cert_path_conf = conf.ldap_ssl_cert_path
-        logger.debug(f"Use SSL Validate_Cert:'{validate_cert_conf}'")
-        if validate_cert_conf == "false":
-            logger.debug(f"No Cert Validation validate_cert_conf is false")
-            tls_config = Tls(validate=ssl.CERT_NONE)
-        elif ssl_cert_path_conf:
-            logger.debug(f"Will validate Cert")
-            tls_config = Tls(validate=ssl.CERT_REQUIRED, ca_certs_file=ssl_cert_path_conf if ssl_cert_path_conf else None)
+    validate_cert_conf = conf.ldap_validate_cert
+    ssl_cert_path_conf = conf.ldap_ssl_cert_path
+    logger.debug(f"Use SSL Validate_Cert:'{validate_cert_conf}'")
+    if validate_cert_conf == "false":
+        logger.debug(f"No Cert Validation validate_cert_conf is false")
+        tls_config = Tls(validate=ssl.CERT_NONE)
+    elif ssl_cert_path_conf:
+        logger.debug(f"Will validate Cert")
+        tls_config = Tls(validate=ssl.CERT_REQUIRED, ca_certs_file=ssl_cert_path_conf if ssl_cert_path_conf else None)
     logger.debug(f"after use_ssl")
     if tls_config:
         logger.debug(f"Using TLS configuration: {tls_config}")
