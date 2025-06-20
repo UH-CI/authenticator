@@ -1,6 +1,9 @@
 from ldap3 import Server, Connection
 from ldap3.core.exceptions import LDAPBindError
+from ldap3.core.tls import Tls
 import json
+import os
+import ssl
 
 from service import tenants, MIGRATIONS_RUNNING
 from service.errors import InvalidPasswordError, InvalidTenantUserError
@@ -24,7 +27,19 @@ def get_ldap_connection(ldap_server, ldap_port, bind_dn, bind_password, use_ssl=
     :param use_ssl: Whether to use SSL when connecting to the LDAP server.
     :return:
     """
-    server = Server(ldap_server, port=ldap_port, use_ssl=use_ssl)
+    tls_config = None
+    if use_ssl:
+        validate_cert_env = os.environ.get("LDAP_VALIDATE_CERT")
+        ssl_cert_path_env = os.environ.get("LDAP_SSL_CERT_PATH")
+        if validate_cert_env == "false":
+            tls_config = Tls(validate=ssl.CERT_NONE)
+        elif ssl_cert_path_env:
+            tls_config = Tls(validate=ssl.CERT_REQUIRED, ca_certs_file=ssl_cert_path_env if ssl_cert_path_env else None)
+
+    if use_ssl and tls_config:
+        server = Server(ldap_server, port=ldap_port, use_ssl=use_ssl, tls=tls_config)
+    else:
+        server = Server(ldap_server, port=ldap_port, use_ssl=use_ssl)
     conn = Connection(server, bind_dn, bind_password, auto_bind=True)
     return conn
 
