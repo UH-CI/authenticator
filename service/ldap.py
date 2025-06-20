@@ -51,7 +51,11 @@ def get_ldap_connection(ldap_server, ldap_port, bind_dn, bind_password, use_ssl=
         logger.debug(f"before Server call ")
         server = Server(ldap_server, port=ldap_port, use_ssl=use_ssl)
     logger.debug(f"before Connection call")
-    conn = Connection(server, bind_dn, bind_password, auto_bind=True)
+    try:
+      conn = Connection(server, bind_dn, bind_password, auto_bind=True)
+    except LDAPException as e:
+      # Catch LDAP-specific exceptions
+      print(f"LDAP error occurred: {e}")
     return conn
 
 
