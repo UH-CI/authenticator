@@ -36,16 +36,19 @@ def get_ldap_connection(ldap_server, ldap_port, bind_dn, bind_password, use_ssl=
             tls_config = Tls(validate=ssl.CERT_NONE)
         elif ssl_cert_path_conf:
             tls_config = Tls(validate=ssl.CERT_REQUIRED, ca_certs_file=ssl_cert_path_conf if ssl_cert_path_conf else None)
-
+    logger.debug(f"after use_ssl")
     if tls_config:
         logger.debug(f"Using TLS configuration: {tls_config}")
     else:
         logger.debug("Not using custom TLS configuration.")
 
     if use_ssl and tls_config:
+        logger.debug(f"before Server call with use_ssl & tls_config")
         server = Server(ldap_server, port=ldap_port, use_ssl=use_ssl, tls=tls_config)
     else:
+        logger.debug(f"before Server call ")
         server = Server(ldap_server, port=ldap_port, use_ssl=use_ssl)
+    logger.debug(f"before Connection call")
     conn = Connection(server, bind_dn, bind_password, auto_bind=True)
     return conn
 
