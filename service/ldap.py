@@ -46,10 +46,10 @@ def get_ldap_connection(ldap_server, ldap_port, bind_dn, bind_password, use_ssl=
 
     if use_ssl and tls_config:
         logger.debug(f"before Server call with use_ssl & tls_config")
-        server = Server(ldap_server, port=ldap_port, use_ssl=use_ssl, tls=tls_config)
+        server = Server(ldap_server, port=ldap_port, use_ssl=use_ssl, tls=tls_config, connect_timeout=10)
     else:
         logger.debug(f"before Server call ")
-        server = Server(ldap_server, port=ldap_port, use_ssl=use_ssl)
+        server = Server(ldap_server, port=ldap_port, use_ssl=use_ssl, connect_timeout=10)
     logger.debug(f"before Connection call")
     try:
       conn = Connection(server, bind_dn, bind_password, auto_bind=True)
