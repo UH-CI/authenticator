@@ -57,13 +57,12 @@ def get_ldap_connection(ldap_server, ldap_port, bind_dn, bind_password, use_ssl=
     try:
       logger.debug(f"Bind Pass '{bind_password}'")
       conn = Connection(server, bind_dn, bind_password, auto_bind=True)
+      return conn
     except Exception as e:
       # Catch any other exceptions
       print(f"An unexpected error occurred: {e}")
       logger.debug(f"An unexpected error occurred: {e}")
-    return conn
-
-
+  
 def get_tapis_ldap_server_info():
     """
     Returns dictionary of Tapis LDAP server connection information.
