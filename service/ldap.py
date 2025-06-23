@@ -37,7 +37,7 @@ def get_ldap_connection(ldap_server, ldap_port, bind_dn, bind_password, use_ssl=
         tls_config = Tls(validate=ssl.CERT_NONE)
     elif ssl_cert_path_conf:
         logger.debug(f"Will validate Cert")
-        tls_config = Tls(validate=ssl.CERT_REQUIRED, ca_certs_file=ssl_cert_path_conf if ssl_cert_path_conf else None)
+        tls_config = Tls(validate=ssl.CERT_REQUIRED, local_certificate_file=ssl_cert_path_conf if ssl_cert_path_conf else None)
     logger.debug(f"after use_ssl")
     if tls_config:
         logger.debug(f"Using TLS configuration: {tls_config}")
@@ -52,6 +52,7 @@ def get_ldap_connection(ldap_server, ldap_port, bind_dn, bind_password, use_ssl=
         server = Server(ldap_server, port=ldap_port, use_ssl=use_ssl, connect_timeout=10)
     logger.debug(f"before Connection call")
     try:
+      logger.debug(f"Bind Pass '{bind_password}'")
       conn = Connection(server, bind_dn, bind_password, auto_bind=True)
     except Exception as e:
       # Catch any other exceptions
