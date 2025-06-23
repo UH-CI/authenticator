@@ -56,7 +56,7 @@ def get_ldap_connection(ldap_server, ldap_port, bind_dn, bind_password, use_ssl=
     except Exception as e:
       # Catch any other exceptions
       print(f"An unexpected error occurred: {e}")
-    logger.debug(f"An unexpected error occurred: {e}")
+      logger.debug(f"An unexpected error occurred: {e}")
     return conn
 
 
