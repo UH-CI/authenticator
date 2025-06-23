@@ -51,7 +51,7 @@ def get_ldap_connection(ldap_server, ldap_port, bind_dn, bind_password, use_ssl=
         logger.debug(f"before Server call ")
         server = Server(ldap_server, port=ldap_port, use_ssl=use_ssl, connect_timeout=10)
     logger.debug(f"before Connection call")
-    if conf.ldap_bind_pass && (conf.ldap_bind_server == ldap_server):
+    if conf.ldap_bind_pass and (conf.ldap_bind_server == ldap_server):
         bind_password = conf.ldap_bind_pass
 
     conn=None
